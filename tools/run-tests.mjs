@@ -6,6 +6,8 @@
 //   4. inner gaps <= max-gap; long whitespace only at head/tail
 //   5. two unseeded runs -> different sequences (novelty)
 //   6. same --seed twice -> identical sequence (reproducibility)
+//   7. crossfade: concat shortens by (n-1)*X; random joints stay in [-X, maxGap]
+//   8. normalize: mismatched-loudness inputs come out at ~-16 LUFS
 // Run: npm test
 
 import { execFile } from 'node:child_process';
@@ -14,7 +16,7 @@ import { mkdir, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
-import { probeDuration, buildRandomPlan, makeRng } from '../lib/engine.mjs';
+import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -28,10 +30,11 @@ function check(name, ok, detail = '') {
   if (!ok) failures++;
 }
 
-async function tone(freq, dur, file) {
+async function tone(freq, dur, file, volume = null) {
   await run(ffmpegPath, [
     '-hide_banner', '-y', '-f', 'lavfi',
     '-i', `sine=frequency=${freq}:duration=${dur}`,
+    ...(volume ? ['-af', `volume=${volume}`] : []),
     ...(file.endsWith('.ogg') ? ['-c:a', 'libvorbis'] :
         file.endsWith('.mp3') ? ['-c:a', 'libmp3lame'] : []),
     path.join(fix, file),
@@ -45,12 +48,16 @@ async function splice(args) {
 
 await rm(fix, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
+await mkdir(path.join(fix, 'loud'), { recursive: true });
 
 // Mixed-format pool: 3+5+7+4 = 19s of source
 await tone(220, 3, 'a220.wav');
 await tone(330, 5, 'b330.ogg');
 await tone(440, 7, 'c440.mp3');
 await tone(550, 4, 'd550.wav');
+// Deliberately mismatched loudness pool for --normalize
+await tone(300, 4, 'loud/quiet.wav', 0.04);
+await tone(400, 4, 'loud/loud.wav', 0.8);
 
 // --- 1. concat: folder input, ogg output ---
 const catOut = path.join(out, 'cat.ogg');
@@ -64,27 +71,50 @@ await splice(['concat', fix, '-o', catGapOut, '--gap', '2']);
 const catGapDur = await probeDuration(catGapOut);
 check('concat --gap 2 duration == 25s', Math.abs(catGapDur - 25) < 0.15, `got ${catGapDur.toFixed(2)}s`);
 
+// --- 7a. concat with crossfade: 19 - 3*1 = 16s ---
+const catXfOut = path.join(out, 'cat-xf.ogg');
+await splice(['concat', fix, '-o', catXfOut, '--crossfade', '1']);
+const catXfDur = await probeDuration(catXfOut);
+check('concat --crossfade 1 duration == 16s', Math.abs(catXfDur - 16) < 0.15, `got ${catXfDur.toFixed(2)}s`);
+
 // --- 2-4. random plan math (engine-level, 500 seeded plans) ---
 const files = [
   { path: 'a.wav', dur: 3 }, { path: 'b.ogg', dur: 5 },
   { path: 'c.mp3', dur: 7 }, { path: 'd.wav', dur: 4 },
 ];
 const target = 60; // cap = floor(60/19)+1 = 4
-let capOk = true, gapOk = true, lenOk = true;
-for (let s = 0; s < 500; s++) {
-  const plan = buildRandomPlan(files, target, { maxGap: 5, rng: makeRng(s) });
-  if (plan.cap !== 4) capOk = false;
-  if (Object.values(plan.counts).some(c => c > plan.cap)) capOk = false;
-  const segs = plan.segments;
-  for (let i = 1; i < segs.length - 1; i++) {
-    if (segs[i].type === 'silence' && segs[i].dur > 5.001) gapOk = false;
+
+function auditPlans(crossfade) {
+  let capOk = true, jointOk = true, boundsOk = true;
+  for (let s = 0; s < 500; s++) {
+    const plan = buildRandomPlan(files, target, { maxGap: 5, crossfade, rng: makeRng(`${crossfade}-${s}`) });
+    if (plan.cap !== 4) capOk = false;
+    if (Object.values(plan.counts).some(c => c > plan.cap)) capOk = false;
+    const evs = plan.events;
+    for (let i = 1; i < evs.length; i++) {
+      const joint = evs[i].start - (evs[i - 1].start + evs[i - 1].dur);
+      if (joint > 5.001 || joint < -crossfade - 0.001) jointOk = false;
+    }
+    const lastEnd = evs[evs.length - 1].start + evs[evs.length - 1].dur;
+    if (evs[0].start < -1e-9 || lastEnd > target + 1e-6) boundsOk = false;
   }
-  const planned = segs.reduce((t, x) => t + x.dur, 0);
-  if (Math.abs(planned - target) > 0.01) lenOk = false;
+  return { capOk, jointOk, boundsOk };
 }
-check('repeat cap == floor(60/19)+1 == 4, never exceeded (500 plans)', capOk);
-check('inner gaps <= 5s, long whitespace only head/tail (500 plans)', gapOk);
-check('planned length == target exactly (500 plans)', lenOk);
+
+const plain = auditPlans(0);
+check('repeat cap == floor(60/19)+1 == 4, never exceeded (500 plans)', plain.capOk);
+check('inner joints in [0, 5s], long whitespace only head/tail (500 plans)', plain.jointOk);
+check('all clips inside [0, target] (500 plans)', plain.boundsOk);
+
+// --- 7b. random with crossfade: joints in [-1.5, 5], cap still held ---
+const xf = auditPlans(1.5);
+check('crossfade 1.5: joints in [-1.5s, 5s] (500 plans)', xf.jointOk);
+check('crossfade 1.5: cap + bounds still hold (500 plans)', xf.capOk && xf.boundsOk);
+
+// crossfade too long for shortest file -> clear error
+let xfThrew = false;
+try { buildConcatPlan(files, { crossfade: 2 }); } catch { xfThrew = true; }
+check('crossfade > shortest/2 -> clear error', xfThrew);
 
 // --- 2. random render: exact output length, wav output from mixed inputs ---
 const rndOut = path.join(out, 'rnd.wav');
@@ -92,6 +122,12 @@ const log1 = await splice(['random', fix, '-o', rndOut, '-l', '60']);
 const rndDur = await probeDuration(rndOut);
 check('random render duration == 60s exactly', Math.abs(rndDur - 60) < 0.05, `got ${rndDur.toFixed(3)}s`);
 check('CLI reports cap of 4', /= 4 use\(s\)/.test(log1), log1.match(/repeat cap.*/)?.[0] ?? 'no cap line');
+
+// random + crossfade renders to exact length too
+const rndXfOut = path.join(out, 'rnd-xf.ogg');
+await splice(['random', fix, '-o', rndXfOut, '-l', '45', '--crossfade', '1', '--no-history']);
+const rndXfDur = await probeDuration(rndXfOut);
+check('random --crossfade render duration == 45s', Math.abs(rndXfDur - 45) < 0.05, `got ${rndXfDur.toFixed(3)}s`);
 
 // --- 5. novelty: second run differs from first, history grows ---
 await splice(['random', fix, '-o', path.join(out, 'rnd2.wav'), '-l', '60']);
@@ -105,7 +141,21 @@ check('unseeded runs produce different sequences',
 const seeded1 = buildRandomPlan(files, target, { maxGap: 5, rng: makeRng('boss') });
 const seeded2 = buildRandomPlan(files, target, { maxGap: 5, rng: makeRng('boss') });
 check('same seed -> identical plan',
-  JSON.stringify(seeded1.segments) === JSON.stringify(seeded2.segments));
+  JSON.stringify(seeded1.events) === JSON.stringify(seeded2.events));
+
+// --- 8. normalize: quiet (vol 0.04) + loud (vol 0.8) -> output near -16 LUFS ---
+const normOut = path.join(out, 'norm.wav');
+const normLog = await splice(['concat', path.join(fix, 'loud'), '-o', normOut, '--normalize']);
+const normMeasured = await measureLoudness(normOut);
+check('normalize: output integrated loudness ~= -16 LUFS',
+  Math.abs(normMeasured.lufs - -16) < 2.5, `got ${normMeasured.lufs.toFixed(1)} LUFS`);
+check('normalize: per-file gains reported', /gain [+-]/.test(normLog));
+// same pool without normalize stays lopsided (sanity that the flag does something)
+const rawOut = path.join(out, 'raw.wav');
+await splice(['concat', path.join(fix, 'loud'), '-o', rawOut]);
+const rawMeasured = await measureLoudness(rawOut);
+check('without --normalize the same pool is NOT at -16',
+  Math.abs(rawMeasured.lufs - -16) > 3, `got ${rawMeasured.lufs.toFixed(1)} LUFS`);
 
 // --- error path: nothing fits ---
 let threw = false;

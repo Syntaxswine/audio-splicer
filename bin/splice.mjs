@@ -21,12 +21,14 @@ Usage:
       Joins inputs end-to-end in order (folders expand to their audio files,
       sorted by name; explicitly listed files keep the order you gave).
       --gap <sec>         fixed silence between files (default 0)
+      --crossfade <sec>   overlap-blend adjacent files instead (excludes --gap)
 
   splice random <files-or-folders...> -o output.ext -l <length> [options]
       Random-order splice padded/fitted to exactly <length>.
       -l, --length        target length: 540, 9:00, 1:02:03, 9m, 90s, 1h30m
       --max-gap <sec>     max silence between files (default 5); leftover time
                           beyond that goes to the start/end of the mix
+      --crossfade <sec>   clips fade in/out and may overlap-blend by up to this
       --seed <s>          reproduce an exact mix (printed on every run)
       --candidates <n>    plans generated per run for novelty selection (default 64)
       --no-history        don't read/write ${HISTORY_NAME} next to the output
@@ -34,6 +36,8 @@ Usage:
 Shared options:
   -o, --output <file>     output path; extension picks the format (.ogg .mp3 .wav
                           .flac .m4a .aac .opus)
+  --normalize             two-pass loudness normalization: every file is measured
+                          and gain-matched to -16 LUFS (true peak capped -1.5 dB)
   --dry-run               print the plan without rendering
 
 Each run of "random" writes its sequence to ${HISTORY_NAME} in the output folder
@@ -89,13 +93,27 @@ async function collectInputs(args) {
 
 function printPlan(plan) {
   console.log('\n  start    dur     item');
-  let t = 0;
-  for (const seg of plan.segments) {
-    const item = seg.type === 'file' ? path.basename(seg.path) : '~ silence ~';
-    console.log(`  ${fmtTime(t).padStart(7)}  ${seg.dur.toFixed(1).padStart(5)}s  ${item}`);
-    t += seg.dur;
+  const evs = plan.events;
+  if (evs[0].start > 0.05) {
+    console.log(`  ${fmtTime(0).padStart(7)}  ${evs[0].start.toFixed(1).padStart(5)}s  ~ silence ~`);
   }
-  console.log(`  total ${fmtTime(t)}`);
+  evs.forEach((e, i) => {
+    let note = '';
+    if (i > 0) {
+      const joint = e.start - (evs[i - 1].start + evs[i - 1].dur);
+      if (joint > 0.05) note = `  (gap ${joint.toFixed(1)}s)`;
+      else if (joint < -0.05) note = `  (xfade ${(-joint).toFixed(1)}s)`;
+    }
+    console.log(
+      `  ${fmtTime(e.start).padStart(7)}  ${e.dur.toFixed(1).padStart(5)}s  ${path.basename(e.path)}${note}`
+    );
+  });
+  const last = evs[evs.length - 1];
+  const tail = plan.totalDur - (last.start + last.dur);
+  if (tail > 0.05) {
+    console.log(`  ${fmtTime(last.start + last.dur).padStart(7)}  ${tail.toFixed(1).padStart(5)}s  ~ silence ~`);
+  }
+  console.log(`  total ${fmtTime(plan.totalDur)}`);
 }
 
 async function loadHistory(historyPath) {
@@ -122,6 +140,8 @@ async function main() {
       length: { type: 'string', short: 'l' },
       gap: { type: 'string', default: '0' },
       'max-gap': { type: 'string', default: '5' },
+      crossfade: { type: 'string', default: '0' },
+      normalize: { type: 'boolean', default: false },
       seed: { type: 'string' },
       candidates: { type: 'string', default: '64' },
       'no-history': { type: 'boolean', default: false },
@@ -131,15 +151,22 @@ async function main() {
 
   if (!opts.output && !opts['dry-run']) throw new Error('Missing -o/--output');
   const outPath = opts.output ? path.resolve(opts.output) : null;
+  const crossfade = parseFloat(opts.crossfade);
+  if (!(crossfade >= 0)) throw new Error('--crossfade must be a number >= 0');
+  const render = async plan => {
+    if (opts.normalize) console.log('\nnormalizing to -16 LUFS:');
+    await renderPlan(plan, outPath, { normalize: opts.normalize, onLog: m => console.log(m) });
+  };
+
   const files = await collectInputs(positionals);
   const totalSource = files.reduce((s, f) => s + f.dur, 0);
 
   if (command === 'concat') {
-    const plan = buildConcatPlan(files, { gap: parseFloat(opts.gap) });
+    const gap = parseFloat(opts.gap);
+    if (gap > 0 && crossfade > 0) throw new Error('--gap and --crossfade are mutually exclusive in concat mode');
+    const plan = buildConcatPlan(files, { gap, crossfade });
     printPlan(plan);
-    if (!opts['dry-run']) {
-      await renderPlan(plan, outPath, { onLog: m => console.log(m) });
-    }
+    if (!opts['dry-run']) await render(plan);
     return;
   }
 
@@ -160,11 +187,11 @@ async function main() {
     let plan, novelty = null;
     if (explicitSeed) {
       // explicit seed = "give me exactly this mix" — no novelty steering
-      plan = buildRandomPlan(files, target, { maxGap, rng });
+      plan = buildRandomPlan(files, target, { maxGap, crossfade, rng });
     } else {
       const n = Math.max(1, parseInt(opts.candidates, 10) || 64);
       const candidates = Array.from({ length: n }, () =>
-        buildRandomPlan(files, target, { maxGap, rng })
+        buildRandomPlan(files, target, { maxGap, crossfade, rng })
       );
       ({ plan, novelty } = pickNovelPlan(candidates, history.map(h => h.sequence)));
     }
@@ -180,7 +207,7 @@ async function main() {
       .map(([p, c]) => `${path.basename(p)}×${c}`).join('  '));
 
     if (!opts['dry-run']) {
-      await renderPlan(plan, outPath, { padTo: target, onLog: m => console.log(m) });
+      await render(plan);
       if (!opts['no-history']) {
         const all = await loadHistory(historyPath);
         all.push({

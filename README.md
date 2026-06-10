@@ -24,10 +24,12 @@ npm test        # generates tone fixtures and verifies all the rules below
 ```
 splice concat C:\sounds -o merged.ogg
 splice concat intro.wav middle.mp3 outro.ogg -o show.mp3 --gap 2
+splice concat C:\sounds -o album.mp3 --crossfade 3 --normalize
 ```
 
 A folder expands to its audio files sorted by name (numeric-aware, so `track2` sorts
-before `track10`); explicitly listed files keep the order you typed.
+before `track10`); explicitly listed files keep the order you typed. `--gap` and
+`--crossfade` are mutually exclusive in this mode.
 
 ## Random fixed-length mix
 
@@ -45,6 +47,19 @@ Rules implemented:
 - **Gaps** — silence between files is random, 0 to `--max-gap` (default 5 s). Whatever
   time can't be filled becomes silence at the **start and end** of the mix, which is
   where gaps longer than 5 s are allowed to live. Output length is sample-exact.
+
+## Optional polish flags (both modes)
+
+- **`--crossfade <sec>`** — equal-power fades instead of hard cuts. In concat mode,
+  adjacent files overlap-blend by exactly that long (total shortens accordingly). In
+  random mode every clip edge gets the fade and the joint between consecutive clips is
+  drawn from `[-crossfade, max-gap]` — negative means the two clips overlap-blend,
+  positive is silence as usual. Requires every file to be at least 2× the fade long.
+- **`--normalize`** — two-pass loudness normalization: every unique file is measured
+  with ffmpeg's `loudnorm`, then a static gain brings it to **−16 LUFS** (capped so
+  true peak never exceeds −1.5 dB; effectively-silent files are left alone). Static
+  gain means quiet recordings come up cleanly with no pumping. Per-file gains are
+  printed before rendering.
 
 ### Novelty across runs
 
