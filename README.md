@@ -1,6 +1,6 @@
 # audio-splicer
 
-Windows CLI for merging audio files into one, two ways:
+Windows tool for merging audio files into one, two ways:
 
 1. **`splice concat`** — joins files end-to-end in order (optionally with a fixed gap).
 2. **`splice random`** — splices files in random order to an exact target length, with
@@ -11,7 +11,26 @@ install system-wide. Input can be any mix of `.ogg .oga .oog .mp3 .wav .flac .m4
 .opus .wma .aiff .webm .mka`; the **output extension picks the output format**
 (`.ogg .mp3 .wav .flac .m4a .aac .opus`), independent of the inputs.
 
-## Setup
+## The app (no terminal needed)
+
+Double-click **Audio Splicer** on the Desktop (or `Audio Splicer.vbs` in this folder).
+A small app window opens: pick the folder with your audio files, pick where to save,
+choose mode and options, hit **MAKE THE MIX**. The window shows the file pool with
+durations, streams progress, then shows the timeline, the seed, a built-in player,
+and a "show in folder" button.
+
+App conveniences on top of the CLI behavior:
+
+- Output defaults to a **`mixes` subfolder** next to your audio files, and outputs
+  saved into the input folder are never re-ingested as source material on later runs.
+- Existing mixes are never overwritten — reruns get `-2`, `-3`, … suffixes, so you can
+  hit the button five times and get five disparate mixes side by side.
+- Settings persist between sessions; the server exits itself after the window closes.
+
+Internals: `app/server.mjs` (local-only HTTP on 127.0.0.1:8741, reuses the engine,
+native folder dialogs via PowerShell) + `app/ui.html`, opened as an Edge app window.
+
+## CLI setup
 
 ```
 npm install
@@ -79,7 +98,9 @@ The chosen plan, per-file use counts, and novelty score print before rendering.
 
 ## Layout
 
+- `app/server.mjs` + `app/ui.html` — the windowed app (`Audio Splicer.vbs` launches it)
 - `bin/splice.mjs` — CLI (arg parsing, folder expansion, history, plan printout)
 - `lib/engine.mjs` — pure plan math (cap, gaps, novelty distance) + ffmpeg render
-- `tools/run-tests.mjs` — self-test: builds tone fixtures in three formats, renders
-  both modes, checks cap/gap/length/novelty/reproducibility rules
+- `tools/run-tests.mjs` — engine/CLI self-test: builds tone fixtures in three formats,
+  renders both modes, checks cap/gap/length/novelty/reproducibility/pollution rules
+- `tools/test-app.mjs` — app self-test: boots the server headless and drives the API

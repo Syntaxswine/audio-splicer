@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audio Splicer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%235b7a64'/><path d='M3 8h2l1-3 2 6 2-8 1.5 5H13' stroke='%23f7f5f0' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<style>
+  :root {
+    --paper: #f7f5f0; --panel: #fffdf8; --ink: #2b2a27; --dim: #8a857b;
+    --line: #d8d4cb; --accent: #5b7a64; --accent-ink: #f7f5f0; --warn: #9c5a47;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px 22px 40px;
+    background: var(--paper); color: var(--ink);
+    font: 13px/1.5 Consolas, 'Cascadia Mono', monospace;
+  }
+  main { max-width: 700px; margin: 0 auto; }
+  h1 { font-size: 15px; letter-spacing: 3px; margin: 0; }
+  .sub { color: var(--dim); font-size: 11px; margin-bottom: 18px; }
+  fieldset {
+    border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
+    margin: 0 0 14px; padding: 12px 14px;
+  }
+  legend { font-size: 11px; letter-spacing: 2px; color: var(--dim); padding: 0 6px; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  label { color: var(--dim); min-width: 92px; }
+  input[type=text] {
+    flex: 1; min-width: 120px; padding: 5px 8px; border: 1px solid var(--line);
+    border-radius: 3px; background: #fff; color: var(--ink); font: inherit;
+  }
+  input.short { flex: 0 0 76px; min-width: 76px; }
+  select { padding: 5px 6px; border: 1px solid var(--line); border-radius: 3px; background: #fff; font: inherit; color: var(--ink); }
+  button {
+    padding: 5px 12px; border: 1px solid var(--line); border-radius: 3px;
+    background: #fff; color: var(--ink); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tabs button { border-radius: 3px 3px 0 0; }
+  .tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  #run {
+    width: 100%; padding: 10px; margin-top: 4px; letter-spacing: 2px;
+    background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-size: 13px;
+  }
+  #run:disabled { background: var(--dim); border-color: var(--dim); }
+  .filelist { max-height: 150px; overflow-y: auto; border: 1px solid var(--line); border-radius: 3px;
+    background: #fff; padding: 4px 8px; white-space: pre; font-size: 12px; }
+  .filelist:empty { display: none; }
+  .totals { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  #log { white-space: pre-wrap; color: var(--dim); font-size: 12px; margin: 10px 0 0; min-height: 0; }
+  #result { display: none; }
+  #result .head { color: var(--accent); }
+  #timeline { white-space: pre; overflow-x: auto; background: #fff; border: 1px solid var(--line);
+    border-radius: 3px; padding: 6px 10px; font-size: 12px; }
+  .err { color: var(--warn); }
+  audio { width: 100%; margin-top: 8px; height: 32px; }
+  .hint { color: var(--dim); font-size: 11px; }
+  .check { display: flex; gap: 6px; align-items: center; color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>AUDIO SPLICER</h1>
+  <div class="sub">sequential merge &amp; fixed-length random mix</div>
+
+  <fieldset>
+    <legend>FOLDERS</legend>
+    <div class="row">
+      <label for="inFolder">audio files</label>
+      <input type="text" id="inFolder" placeholder="folder with your recordings">
+      <button id="inBrowse">browse…</button>
+    </div>
+    <div id="files" class="filelist"></div>
+    <div id="fileTotals" class="totals"></div>
+    <div class="row">
+      <label for="outFolder">save mix to</label>
+      <input type="text" id="outFolder" placeholder="(a &quot;mixes&quot; folder next to the audio files)">
+      <button id="outBrowse">browse…</button>
+    </div>
+    <div class="row">
+      <label for="outName">mix name</label>
+      <input type="text" id="outName" class="short" value="mix">
+      <select id="format">
+        <option value=".ogg" selected>.ogg</option>
+        <option value=".mp3">.mp3</option>
+        <option value=".wav">.wav</option>
+        <option value=".flac">.flac</option>
+        <option value=".m4a">.m4a</option>
+        <option value=".opus">.opus</option>
+      </select>
+      <span class="hint">existing files are never overwritten — reruns get -2, -3…</span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>MODE</legend>
+    <div class="tabs">
+      <button id="tabRandom" class="on">random mix</button>
+      <button id="tabConcat">sequential</button>
+    </div>
+
+    <div id="optsRandom">
+      <div class="row">
+        <label for="length">total length</label>
+        <input type="text" id="length" class="short" value="9:00">
+        <span class="hint">like 9:00, 1h30m or 540 (seconds)</span>
+      </div>
+      <div class="row">
+        <label for="maxGap">max gap</label>
+        <input type="text" id="maxGap" class="short" value="5">
+        <span class="hint">seconds of silence allowed between clips; extra time goes to the start/end</span>
+      </div>
+      <div class="row">
+        <label for="seed">seed</label>
+        <input type="text" id="seed" class="short" placeholder="auto">
+        <span class="hint">paste a seed from an earlier run to recreate that exact mix</span>
+      </div>
+      <div class="row">
+        <label></label>
+        <span class="check"><input type="checkbox" id="history" checked>
+          <label for="history" style="min-width:0">make each run different from previous mixes</label></span>
+      </div>
+    </div>
+
+    <div id="optsConcat" style="display:none">
+      <div class="row">
+        <label for="gap">gap</label>
+        <input type="text" id="gap" class="short" value="0">
+        <span class="hint">seconds of silence between files (ignored when crossfading)</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <label for="crossfade">crossfade</label>
+      <input type="text" id="crossfade" class="short" value="0">
+      <span class="hint">seconds of overlap-blend; 0 = clean cuts</span>
+    </div>
+    <div class="row">
+      <label></label>
+      <span class="check"><input type="checkbox" id="normalize">
+        <label for="normalize" style="min-width:0">match loudness across files (-16 LUFS)</label></span>
+    </div>
+  </fieldset>
+
+  <button id="run">MAKE THE MIX</button>
+  <pre id="log"></pre>
+
+  <fieldset id="result">
+    <legend>RESULT</legend>
+    <div class="head" id="resultName"></div>
+    <div id="resultMeta" class="totals"></div>
+    <audio id="player" controls preload="none"></audio>
+    <div class="row" style="margin-top:8px">
+      <button id="openFolder">show in folder</button>
+      <button id="again">run again</button>
+    </div>
+    <div style="margin-top:10px" class="totals">timeline</div>
+    <div id="timeline"></div>
+  </fieldset>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { mode: 'random', lastOut: null, scanTimer: null };
+
+function fmt(sec) {
+  const m = Math.floor(sec / 60), s = sec - m * 60;
+  return m + ':' + s.toFixed(1).padStart(4, '0');
+}
+
+async function api(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}) });
+  return res.json();
+}
+
+// --- folders ---
+async function browse(kind, field) {
+  const r = await api('/api/browse', { kind });
+  if (r.path) {
+    field.value = r.path;
+    persist();
+    if (kind === 'input') scan();
+  }
+}
+$('inBrowse').onclick = () => browse('input', $('inFolder'));
+$('outBrowse').onclick = () => browse('output', $('outFolder'));
+for (const id of ['inFolder', 'outFolder', 'outName']) {
+  $(id).addEventListener('input', () => {
+    clearTimeout(state.scanTimer);
+    state.scanTimer = setTimeout(scan, 600);
+  });
+}
+
+async function scan() {
+  const folder = $('inFolder').value.trim();
+  $('files').textContent = '';
+  $('fileTotals').textContent = '';
+  if (!folder) return;
+  // when mixes are saved into the source folder, hide this tool's own outputs
+  const sameFolder = $('outFolder').value.trim() &&
+    $('outFolder').value.trim().toLowerCase() === folder.toLowerCase();
+  const r = await api('/api/scan', { folder, excludeBase: sameFolder ? $('outName').value : null });
+  if (r.error) { $('fileTotals').textContent = r.error; return; }
+  const w = Math.max(...r.files.map(f => f.name.length));
+  $('files').textContent = r.files.map(f => f.name.padEnd(w + 2) + fmt(f.dur)).join('\n');
+  $('fileTotals').textContent = r.files.length + ' file(s), ' + fmt(r.total) + ' of audio';
+  persist();
+}
+
+// --- mode tabs ---
+function setMode(mode) {
+  state.mode = mode;
+  $('tabRandom').classList.toggle('on', mode === 'random');
+  $('tabConcat').classList.toggle('on', mode === 'concat');
+  $('optsRandom').style.display = mode === 'random' ? '' : 'none';
+  $('optsConcat').style.display = mode === 'concat' ? '' : 'none';
+  persist();
+}
+$('tabRandom').onclick = () => setMode('random');
+$('tabConcat').onclick = () => setMode('concat');
+
+// --- run ---
+$('run').onclick = run;
+$('again').onclick = run;
+async function run() {
+  $('result').style.display = 'none';
+  $('log').textContent = '';
+  $('log').classList.remove('err');
+  $('run').disabled = true;
+  $('run').textContent = 'WORKING…';
+  try {
+    const res = await fetch('/api/mix', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: state.mode,
+        inputFolder: $('inFolder').value,
+        outputFolder: $('outFolder').value,
+        name: $('outName').value,
+        format: $('format').value,
+        gap: $('gap').value,
+        crossfade: $('crossfade').value,
+        normalize: $('normalize').checked,
+        length: $('length').value,
+        maxGap: $('maxGap').value,
+        seed: $('seed').value,
+        history: $('history').checked,
+      }) });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let done = null;
+    for (;;) {
+      const { value, done: eof } = await reader.read();
+      if (eof) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.log) $('log').textContent += msg.log + '\n';
+        if (msg.error) throw new Error(msg.error);
+        if (msg.done) done = msg.done;
+      }
+    }
+    if (!done) throw new Error('No result came back — try again.');
+    showResult(done);
+  } catch (err) {
+    $('log').classList.add('err');
+    $('log').textContent += '\n' + err.message;
+  } finally {
+    $('run').disabled = false;
+    $('run').textContent = 'MAKE THE MIX';
+  }
+}
+
+function showResult(d) {
+  state.lastOut = d.outPath;
+  $('log').textContent = '';
+  $('resultName').textContent = d.outName + '  (' + fmt(d.totalDur) + ')';
+  const meta = [];
+  if (d.seed) meta.push('seed ' + d.seed + ' — paste it into the seed box to recreate this mix');
+  if (d.novelty != null) meta.push('novelty: ' + Math.round(d.novelty * 100) + '% different from your previous mixes');
+  if (d.cap) meta.push('repeat cap: ' + d.cap + ' use(s) per file');
+  if (d.counts) meta.push('uses: ' + Object.entries(d.counts).map(([n, c]) => n + '×' + c).join('  '));
+  $('resultMeta').innerHTML = meta.map(m => m.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
+  const rows = ['  start    dur     item'];
+  let prevEnd = null;
+  if (d.events[0].start > 0.05) rows.push('  ' + fmt(0).padStart(7) + '  ' + d.events[0].start.toFixed(1).padStart(5) + 's  ~ silence ~');
+  for (const e of d.events) {
+    let note = '';
+    if (prevEnd != null) {
+      const joint = e.start - prevEnd;
+      if (joint > 0.05) note = '  (gap ' + joint.toFixed(1) + 's)';
+      else if (joint < -0.05) note = '  (xfade ' + (-joint).toFixed(1) + 's)';
+    }
+    rows.push('  ' + fmt(e.start).padStart(7) + '  ' + e.dur.toFixed(1).padStart(5) + 's  ' + e.name + note);
+    prevEnd = e.start + e.dur;
+  }
+  const tail = d.totalDur - prevEnd;
+  if (tail > 0.05) rows.push('  ' + fmt(prevEnd).padStart(7) + '  ' + tail.toFixed(1).padStart(5) + 's  ~ silence ~');
+  $('timeline').textContent = rows.join('\n');
+  $('player').src = '/api/audio?p=' + encodeURIComponent(d.outPath);
+  $('result').style.display = '';
+  $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+$('openFolder').onclick = () => { if (state.lastOut) api('/api/open', { file: state.lastOut }); };
+
+// --- settings persistence + server heartbeat ---
+const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade'];
+function persist() {
+  const data = { mode: state.mode };
+  for (const f of FIELDS) data[f] = $(f).value;
+  data.normalize = $('normalize').checked;
+  data.history = $('history').checked;
+  localStorage.setItem('splice-settings', JSON.stringify(data));
+}
+(function restore() {
+  try {
+    const data = JSON.parse(localStorage.getItem('splice-settings') || '{}');
+    for (const f of FIELDS) if (data[f] != null) $(f).value = data[f];
+    if (data.normalize != null) $('normalize').checked = data.normalize;
+    if (data.history != null) $('history').checked = data.history;
+    if (data.mode) setMode(data.mode);
+    if ($('inFolder').value) scan();
+  } catch {}
+})();
+for (const f of FIELDS) $(f).addEventListener('change', persist);
+$('normalize').addEventListener('change', persist);
+$('history').addEventListener('change', persist);
+
+setInterval(() => fetch('/api/ping', { method: 'POST' }).catch(() => {}), 10000);
+fetch('/api/ping', { method: 'POST' }).catch(() => {});
+window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye'));
+</script>
+</body>
+</html>

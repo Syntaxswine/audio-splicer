@@ -6,7 +6,7 @@ import { readdir, stat, readFile, writeFile } from 'node:fs/promises';
 import { randomInt } from 'node:crypto';
 import path from 'node:path';
 import {
-  AUDIO_EXTENSIONS, probeDuration, makeRng,
+  AUDIO_EXTENSIONS, probeDuration, makeRng, parseLength, fmtTime, mixArtifactRegex,
   buildConcatPlan, buildRandomPlan, planSequence, pickNovelPlan, renderPlan,
 } from '../lib/engine.mjs';
 
@@ -45,35 +45,22 @@ and future runs pick the candidate mix most dissimilar from that history, so
 repeated runs give genuinely different arrangements.`);
 }
 
-function parseLength(s) {
-  if (!s) return null;
-  const hms = s.match(/^(?:(\d+):)?(\d+):(\d{1,2}(?:\.\d+)?)$/);
-  if (hms) {
-    const [, h, m, sec] = hms;
-    return (h ? +h * 3600 : 0) + +m * 60 + +sec;
-  }
-  const units = s.match(/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/);
-  if (units && (units[1] || units[2] || units[3])) {
-    return (+units[1] || 0) * 3600 + (+units[2] || 0) * 60 + (+units[3] || 0);
-  }
-  const plain = Number(s);
-  return Number.isFinite(plain) && plain > 0 ? plain : null;
-}
-
-function fmtTime(sec) {
-  const m = Math.floor(sec / 60);
-  const s = sec - m * 60;
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
-}
-
-async function collectInputs(args) {
+async function collectInputs(args, outPath) {
+  // a scanned folder may be where earlier mixes were saved — never re-ingest
+  // this tool's own outputs ("mix.ogg", "mix-2.ogg", ...) as source material
+  const outDir = outPath ? path.resolve(path.dirname(outPath)) : null;
+  const artifact = outPath
+    ? mixArtifactRegex(path.basename(outPath, path.extname(outPath)).replace(/-\d+$/, ''))
+    : null;
   const files = [];
   for (const arg of args) {
     const st = await stat(arg).catch(() => null);
     if (!st) throw new Error(`Input not found: ${arg}`);
     if (st.isDirectory()) {
+      const isOutDir = outDir && path.resolve(arg) === outDir;
       const entries = (await readdir(arg))
         .filter(e => AUDIO_EXTENSIONS.has(path.extname(e).toLowerCase()))
+        .filter(e => !(isOutDir && artifact.test(e)))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       if (entries.length === 0) throw new Error(`No audio files found in folder: ${arg}`);
       files.push(...entries.map(e => path.join(arg, e)));
@@ -158,7 +145,7 @@ async function main() {
     await renderPlan(plan, outPath, { normalize: opts.normalize, onLog: m => console.log(m) });
   };
 
-  const files = await collectInputs(positionals);
+  const files = await collectInputs(positionals, outPath);
   const totalSource = files.reduce((s, f) => s + f.dur, 0);
 
   if (command === 'concat') {

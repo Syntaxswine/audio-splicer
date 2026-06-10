@@ -157,6 +157,15 @@ const rawMeasured = await measureLoudness(rawOut);
 check('without --normalize the same pool is NOT at -16',
   Math.abs(rawMeasured.lufs - -16) > 3, `got ${rawMeasured.lufs.toFixed(1)} LUFS`);
 
+// --- output pollution: a mix saved into the input folder must not be re-ingested ---
+await splice(['concat', fix, '-o', path.join(fix, 'pol.ogg')]);          // 19s mix lands IN the pool
+await splice(['concat', fix, '-o', path.join(fix, 'pol-2.ogg')]);        // would be 38s if pol.ogg got ingested
+const polDur = await probeDuration(path.join(fix, 'pol-2.ogg'));
+check('own outputs in the input folder are excluded from the next mix',
+  Math.abs(polDur - 19) < 0.15, `got ${polDur.toFixed(2)}s (38 would mean pollution)`);
+await rm(path.join(fix, 'pol.ogg'), { force: true });
+await rm(path.join(fix, 'pol-2.ogg'), { force: true });
+
 // --- error path: nothing fits ---
 let threw = false;
 try { buildRandomPlan(files, 2, { rng: makeRng(1) }); } catch { threw = true; }
