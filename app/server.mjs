@@ -266,9 +266,12 @@ async function handleLoop(req, res) {
     if (!existsSync(outDir)) throw new Error(`Output folder does not exist: ${outDir}`);
     const outPath = uniquePath(outDir, `${path.basename(file, srcExt)}-loop`, ext);
 
-    const r = await findLoopCrop(file, { maxTrim: q.maxTrim || null, onLog: m => send({ log: m }) });
+    const r = await findLoopCrop(file, { maxTrim: q.maxTrim || null, quality: q.quality || null, onLog: m => send({ log: m }) });
+    // weak seam: auto-blend the trimmed lead-in under the tail so the wrap
+    // plays the track's own real transition
+    const seamFade = r.weakSeam && r.startSec > 1.01 ? 1 : 0;
     send({ log: 'rendering crop...' });
-    await renderLoopCrop(file, outPath, r.startSec, r.endSec);
+    await renderLoopCrop(file, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
     send({
       done: {
         kind: 'loop',
@@ -276,6 +279,7 @@ async function handleLoop(req, res) {
         durSec: r.durSec, startSec: r.startSec, endSec: r.endSec, keptSec: r.keptSec,
         score: r.score, percentile: r.percentile,
         bpm: r.bpm, beatAligned: r.beatAligned, beatsKept: r.beatsKept,
+        weakSeam: r.weakSeam, seamFadeSec: seamFade,
         totalDur: r.keptSec,
       },
     });

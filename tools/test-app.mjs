@@ -103,7 +103,8 @@ try {
   const loopRes = await post('/api/loop', { file: loopSrc, outputFolder: out, format: '.ogg' });
   const loopDone = (await loopRes.text()).trim().split('\n').map(l => JSON.parse(l)).find(l => l.done)?.done;
   check('loop endpoint returns cuts + quality', !!loopDone &&
-    loopDone.kind === 'loop' && loopDone.keptSec > 7 && loopDone.score > 0.9,
+    loopDone.kind === 'loop' && loopDone.keptSec > 7 &&
+    loopDone.score >= 0.85 && loopDone.weakSeam === false,
     JSON.stringify(loopDone));
   check('loop output named <track>-loop', loopDone?.outName === 'loopsrc-loop.ogg', loopDone?.outName);
   const loopDur = loopDone ? await probeDuration(loopDone.outPath) : 0;

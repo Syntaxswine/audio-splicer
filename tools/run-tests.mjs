@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
 import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
-import { findLoopCrop, detectBeats, decodeMono } from '../lib/loop.mjs';
+import { findLoopCrop, renderLoopCrop, detectBeats, decodeMono, featurize, selectLoopPair } from '../lib/loop.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -183,14 +183,16 @@ await splice(['concat',
   path.join(fix, 'loop', 'r.wav'), '-o', loopSrc]);
 
 const lc = await findLoopCrop(loopSrc);
-check('loop: start cut lands at the first motif (~1.0s)',
-  lc.startSec > 0.85 && lc.startSec < 1.4, `got ${lc.startSec.toFixed(2)}s`);
+// longest-above-floor selection may legitimately stretch ~0.2s into the
+// boundary blur (score stays >= the 0.85 bar), hence the loose low bounds
+check('loop: start cut lands at the first motif (~0.8-1.0s)',
+  lc.startSec > 0.6 && lc.startSec < 1.4, `got ${lc.startSec.toFixed(2)}s`);
 check('loop: end cut lands inside the second motif (~9.5s)',
-  lc.endSec > 9.0 && lc.endSec < 9.8, `got ${lc.endSec.toFixed(2)}s`);
-check('loop: keeps the longest seamless span (~8.5s)',
-  lc.keptSec > 7.8 && lc.keptSec < 8.9, `got ${lc.keptSec.toFixed(2)}s`);
-check('loop: seam texture match is near-perfect on identical motifs',
-  lc.score > 0.9, `got ${lc.score.toFixed(3)}`);
+  lc.endSec > 9.0 && lc.endSec < 9.9, `got ${lc.endSec.toFixed(2)}s`);
+check('loop: keeps the longest seamless span (~8.5-8.9s)',
+  lc.keptSec > 7.8 && lc.keptSec < 9.3, `got ${lc.keptSec.toFixed(2)}s`);
+check('loop: seam match clears the quality floor on identical motifs',
+  lc.score >= 0.85 && !lc.weakSeam, `got ${lc.score.toFixed(3)} weak=${lc.weakSeam}`);
 // note: ~20% of candidate pairs here tie the winner by design (any M1 offset
 // pairs perfectly with the same M2 offset), so the bar is 0.6, not 0.9
 check('loop: chosen cut pair beats most alternative cut pairs',
@@ -206,6 +208,66 @@ const loopDur = await probeDuration(path.join(out, 'looped.ogg'));
 check('loop: CLI renders crop matching the analysis',
   Math.abs(loopDur - lc.keptSec) < 0.1, `got ${loopDur.toFixed(2)}s vs ${lc.keptSec.toFixed(2)}s`);
 check('loop: CLI reports the seam quality', /texture match/.test(loopLog));
+
+// --- 9a2. seam crossfade: the wrap must play the track's own transition ---
+// render with the trimmed lead-in blended under the tail; the file's last
+// samples must equal the source content just before the start cut, so
+// end -> start is sample-continuous on loop
+const sfOut = path.join(out, 'seamfade.wav');
+await renderLoopCrop(loopSrc, sfOut, lc.startSec, lc.endSec, { seamFadeSec: 0.5 });
+const sfDur = await probeDuration(sfOut);
+check('seam fade: rendered length unchanged', Math.abs(sfDur - lc.keptSec) < 0.05,
+  `got ${sfDur.toFixed(3)} vs ${lc.keptSec.toFixed(3)}`);
+const sfPcm = await decodeMono(sfOut);
+const srcPcm = await decodeMono(loopSrc);
+const s0 = Math.round(lc.startSec * 22050);
+let maxDiff = 0;
+for (let i = 40; i <= 160; i++) {
+  maxDiff = Math.max(maxDiff, Math.abs(sfPcm[sfPcm.length - i] - srcPcm[s0 - i]));
+}
+check('seam fade: file tail == natural lead-in to the file start (sample-continuous wrap)',
+  maxDiff < 0.1, `max sample diff ${maxDiff.toFixed(3)}`);
+// and the tail must NOT be faded to silence (the blend replaces the fade-out)
+let tailRms = 0;
+for (let i = 1; i <= 2205; i++) tailRms += sfPcm[sfPcm.length - i] ** 2;
+tailRms = Math.sqrt(tailRms / 2205);
+check('seam fade: tail keeps full level (no fade-to-silence at the seam)',
+  tailRms > 0.05, `tail RMS ${tailRms.toFixed(3)}`);
+
+// --- 9b. pair selection: longest-above-floor, not best-score-with-slack ---
+// (best-with-slack degenerates on real music: self-similarity decays with
+// distance, so nearby pairs always win and cuts slam into the trim limits)
+const selLong = selectLoopPair([{ len: 30, score: 0.97 }, { len: 100, score: 0.87 }]);
+check('selection: longest pair above the quality floor wins',
+  selLong.pick.len === 100 && !selLong.fellBack, JSON.stringify(selLong));
+const selWeak = selectLoopPair([{ len: 30, score: 0.78 }, { len: 100, score: 0.70 }]);
+check('selection: nothing clears the floor -> best score + honest flag',
+  selWeak.pick.len === 30 && selWeak.fellBack, JSON.stringify(selWeak));
+
+// --- 9c. chroma: "sounds alike" must include pitch, not just texture ---
+// A vs A# notes WITH HARMONICS (real notes have them; chroma discriminates on
+// the harmonic series — bare low fundamentals are below FFT resolution, where
+// a semitone is narrower than the analysis mainlobe). Same spectral bands, so
+// texture alone called them a match; pitch classes must tell them apart.
+function sinePcm(freq, sec, rate = 22050) {
+  const s = new Float32Array(Math.round(sec * rate));
+  for (let i = 0; i < s.length; i++) {
+    const t = (2 * Math.PI * freq * i) / rate;
+    s[i] = 0.4 * Math.sin(t) + 0.25 * Math.sin(2 * t) + 0.18 * Math.sin(3 * t) + 0.12 * Math.sin(4 * t);
+  }
+  return s;
+}
+function midFrameDot(Fa, Fb) {
+  const fa = Math.floor(Fa.nFrames / 2) * Fa.D, fb = Math.floor(Fb.nFrames / 2) * Fb.D;
+  let dot = 0;
+  for (let d = 0; d < Fa.D; d++) dot += Fa.feats[fa + d] * Fb.feats[fb + d];
+  return dot;
+}
+const fA = featurize(sinePcm(440, 3)), fAs = featurize(sinePcm(466.16, 3)), fA2 = featurize(sinePcm(440, 3));
+check('chroma: semitone-apart tones no longer read as a match',
+  midFrameDot(fA, fAs) < 0.75, `dot ${midFrameDot(fA, fAs).toFixed(3)}`);
+check('chroma: identical tones still match near-perfectly',
+  midFrameDot(fA, fA2) > 0.95, `dot ${midFrameDot(fA, fA2).toFixed(3)}`);
 
 // --- 10. beat detection: synthetic 120 BPM kick track ---
 // decaying 170Hz thump every 0.5s for 24s; detector must measure ~120 BPM

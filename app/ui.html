@@ -332,6 +332,11 @@ function showResult(d) {
     if (d.beatAligned) {
       meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats, cuts on the grid');
     }
+    if (d.weakSeam) {
+      meta.push(d.seamFadeSec > 0
+        ? '⚠ no strongly matching cut pair — blended the trimmed lead-in under the last ' + d.seamFadeSec.toFixed(1) + 's, so the wrap plays the track\'s own transition'
+        : '⚠ weak seam — no cut pair matched strongly; this may not loop cleanly. A larger max trim gives the search more room.');
+    }
     meta.push('the player below repeats forever — listen across the restart');
     $('resultMeta').innerHTML = meta.map(m => m.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
     $('timeline').textContent = '';

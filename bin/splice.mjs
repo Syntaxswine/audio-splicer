@@ -44,6 +44,12 @@ Usage:
       it falls back to pure texture matching automatically.
       --max-trim <s|%>    most to cut from EACH end (default 30% capped at 90s)
       --window <sec>      seconds of context compared around the seam (default 1.5)
+      --quality <0..1>    the "audibly seamless" bar (default 0.85): the LONGEST
+                          crop above the bar wins; if nothing clears it the
+                          report says so plainly
+      --seam-fade <sec>   blend the trimmed-off lead-in under the loop's tail so
+                          the wrap plays the track's own real transition; auto-
+                          engages at 1s on weak seams (0 disables)
       --no-beats          never snap to beats, texture matching only
 
 Shared options:
@@ -148,6 +154,8 @@ async function main() {
       'dry-run': { type: 'boolean', default: false },
       'max-trim': { type: 'string' },
       window: { type: 'string', default: '1.5' },
+      quality: { type: 'string' },
+      'seam-fade': { type: 'string' },
       'no-beats': { type: 'boolean', default: false },
     },
   });
@@ -165,6 +173,7 @@ async function main() {
       maxTrim: opts['max-trim'],
       windowSec: parseFloat(opts.window),
       useBeats: !opts['no-beats'],
+      quality: opts.quality,
       onLog: m => console.log(m),
     });
     console.log(`\ntrack: ${fmtTime(r.durSec)}`);
@@ -174,8 +183,16 @@ async function main() {
     if (r.beatAligned) {
       console.log(`beats: ${r.bpm.toFixed(1)} BPM — loop is exactly ${r.beatsKept} beats, cuts on the grid`);
     }
+    const seamFade = opts['seam-fade'] != null
+      ? Math.max(0, parseFloat(opts['seam-fade']) || 0)
+      : (r.weakSeam && r.startSec > 1.01 ? 1 : 0);
+    if (r.weakSeam) {
+      console.log(seamFade > 0
+        ? `note:  weak seam — blending the trimmed lead-in under the last ${seamFade.toFixed(1)}s so the wrap plays the track's own transition (--seam-fade 0 to disable)`
+        : 'note:  WEAK SEAM — this track may not loop cleanly; try a larger --max-trim, a lower --quality, or --seam-fade');
+    }
     if (!opts['dry-run']) {
-      await renderLoopCrop(track, outPath, r.startSec, r.endSec);
+      await renderLoopCrop(track, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
       console.log(`wrote ${outPath}`);
     }
     return;
