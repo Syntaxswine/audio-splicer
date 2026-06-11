@@ -9,6 +9,7 @@ import {
   AUDIO_EXTENSIONS, probeDuration, makeRng, parseLength, fmtTime, mixArtifactRegex,
   buildConcatPlan, buildRandomPlan, planSequence, pickNovelPlan, renderPlan,
 } from '../lib/engine.mjs';
+import { findLoopCrop, renderLoopCrop } from '../lib/loop.mjs';
 
 const HISTORY_NAME = '.splice-history.json';
 const HISTORY_LIMIT = 200;
@@ -32,6 +33,14 @@ Usage:
       --seed <s>          reproduce an exact mix (printed on every run)
       --candidates <n>    plans generated per run for novelty selection (default 64)
       --no-history        don't read/write ${HISTORY_NAME} next to the output
+
+  splice loop <track> [-o output.ext] [options]
+      Crops a track at the start and end so it loops seamlessly, keeping it as
+      long as possible. Finds the cut pair whose surrounding audio matches best
+      (texture + loudness), then aligns the cuts to the waveform so the seam
+      doesn't click. Default output: <track>-loop.<same ext>.
+      --max-trim <s|%>    most to cut from EACH end (default 30% capped at 90s)
+      --window <sec>      seconds of context compared around the seam (default 1.5)
 
 Shared options:
   -o, --output <file>     output path; extension picks the format (.ogg .mp3 .wav
@@ -133,8 +142,35 @@ async function main() {
       candidates: { type: 'string', default: '64' },
       'no-history': { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
+      'max-trim': { type: 'string' },
+      window: { type: 'string', default: '1.5' },
     },
   });
+
+  if (command === 'loop') {
+    const [track] = positionals;
+    if (!track) throw new Error('loop mode needs a track: splice loop <file>');
+    const st = await stat(track).catch(() => null);
+    if (!st || st.isDirectory()) throw new Error(`Track not found: ${track}`);
+    const ext = path.extname(track);
+    const outPath = path.resolve(opts.output
+      ?? path.join(path.dirname(track), `${path.basename(track, ext)}-loop${ext}`));
+
+    const r = await findLoopCrop(track, {
+      maxTrim: opts['max-trim'],
+      windowSec: parseFloat(opts.window),
+      onLog: m => console.log(m),
+    });
+    console.log(`\ntrack: ${fmtTime(r.durSec)}`);
+    console.log(`keep:  ${fmtTime(r.startSec)} -> ${fmtTime(r.endSec)}  (${fmtTime(r.keptSec)}, ${(100 * r.keptSec / r.durSec).toFixed(0)}% of the track)`);
+    console.log(`trim:  ${r.startSec.toFixed(2)}s from the start, ${(r.durSec - r.endSec).toFixed(2)}s from the end`);
+    console.log(`seam:  ${(r.score * 100).toFixed(0)}% texture match; better cut pair than ${(r.percentile * 100).toFixed(0)}% of the alternatives`);
+    if (!opts['dry-run']) {
+      await renderLoopCrop(track, outPath, r.startSec, r.endSec);
+      console.log(`wrote ${outPath}`);
+    }
+    return;
+  }
 
   if (!opts.output && !opts['dry-run']) throw new Error('Missing -o/--output');
   const outPath = opts.output ? path.resolve(opts.output) : null;

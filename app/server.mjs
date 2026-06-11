@@ -15,6 +15,7 @@ import {
   AUDIO_EXTENSIONS, probeDuration, makeRng, parseLength, mixArtifactRegex,
   buildConcatPlan, buildRandomPlan, planSequence, pickNovelPlan, renderPlan,
 } from '../lib/engine.mjs';
+import { findLoopCrop, renderLoopCrop } from '../lib/loop.mjs';
 
 const PORT = parseInt(process.env.SPLICE_PORT || '8741', 10);
 const appDir = path.dirname(fileURLToPath(import.meta.url));
@@ -58,6 +59,19 @@ async function scanFolder(folder, excludeBase = null) {
     files.push({ path: p, name, dur: await probeDuration(p) });
   }
   return files;
+}
+
+// Native Windows file picker for loop mode.
+async function pickFile() {
+  const filter = 'Audio files|*.ogg;*.oga;*.oog;*.mp3;*.wav;*.flac;*.m4a;*.aac;*.opus;*.wma;*.aiff;*.aif;*.webm;*.mka|All files|*.*';
+  const script =
+    `Add-Type -AssemblyName System.Windows.Forms; ` +
+    `$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }; ` +
+    `$d = New-Object System.Windows.Forms.OpenFileDialog; ` +
+    `$d.Title = 'Choose the track to make loopable'; $d.Filter = '${filter}'; ` +
+    `if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }`;
+  const { stdout } = await pexec('powershell', ['-NoProfile', '-STA', '-Command', script]);
+  return stdout.trim() || null;
 }
 
 // Native Windows folder picker (the TopMost owner form keeps it in front).
@@ -194,6 +208,40 @@ async function handleMix(req, res) {
   }
 }
 
+async function handleLoop(req, res) {
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
+  const send = obj => res.write(JSON.stringify(obj) + '\n');
+  rendering = true;
+  try {
+    const q = await readBody(req);
+    const file = (q.file || '').trim();
+    if (!file || !existsSync(file)) throw new Error('Pick a track first.');
+    const srcExt = path.extname(file).toLowerCase();
+    const ext = q.format || (srcExt === '.oog' ? '.ogg' : srcExt);
+    const outDir = (q.outputFolder || '').trim() || path.dirname(file);
+    if (!existsSync(outDir)) throw new Error(`Output folder does not exist: ${outDir}`);
+    const outPath = uniquePath(outDir, `${path.basename(file, srcExt)}-loop`, ext);
+
+    const r = await findLoopCrop(file, { maxTrim: q.maxTrim || null, onLog: m => send({ log: m }) });
+    send({ log: 'rendering crop...' });
+    await renderLoopCrop(file, outPath, r.startSec, r.endSec);
+    send({
+      done: {
+        kind: 'loop',
+        outPath, outName: path.basename(outPath),
+        durSec: r.durSec, startSec: r.startSec, endSec: r.endSec, keptSec: r.keptSec,
+        score: r.score, percentile: r.percentile,
+        totalDur: r.keptSec,
+      },
+    });
+  } catch (err) {
+    send({ error: err.message });
+  } finally {
+    rendering = false;
+    res.end();
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
@@ -221,8 +269,12 @@ const server = http.createServer(async (req, res) => {
         files: files.map(f => ({ name: f.name, dur: f.dur })),
         total: files.reduce((s, f) => s + f.dur, 0),
       });
+    } else if (url.pathname === '/api/browse-file') {
+      sendJson(res, { path: await pickFile() });
     } else if (url.pathname === '/api/mix') {
       await handleMix(req, res);
+    } else if (url.pathname === '/api/loop') {
+      await handleLoop(req, res);
     } else if (url.pathname === '/api/audio') {
       const p = url.searchParams.get('p') || '';
       const ext = path.extname(p).toLowerCase();

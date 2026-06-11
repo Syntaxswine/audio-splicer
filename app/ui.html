@@ -99,6 +99,7 @@
     <div class="tabs">
       <button id="tabRandom" class="on">random mix</button>
       <button id="tabConcat">sequential</button>
+      <button id="tabLoop">loop a track</button>
     </div>
 
     <div id="optsRandom">
@@ -132,15 +133,35 @@
       </div>
     </div>
 
-    <div class="row">
-      <label for="crossfade">crossfade</label>
-      <input type="text" id="crossfade" class="short" value="0">
-      <span class="hint">seconds of overlap-blend; 0 = clean cuts</span>
+    <div id="optsLoop" style="display:none">
+      <div class="row">
+        <label for="loopFile">track</label>
+        <input type="text" id="loopFile" placeholder="the audio file to make loopable">
+        <button id="loopBrowse">browse…</button>
+      </div>
+      <div class="row">
+        <label for="maxTrim">max trim</label>
+        <input type="text" id="maxTrim" class="short" value="30%">
+        <span class="hint">most to cut from EACH end — seconds or % of the track</span>
+      </div>
+      <div class="hint" style="margin:6px 0 2px">
+        Finds the start/end crop whose join sounds seamless when the track repeats,
+        keeping it as long as possible. Saved next to the track as
+        <i>name</i>-loop unless "save mix to" is set. The folder list above is not used.
+      </div>
     </div>
-    <div class="row">
-      <label></label>
-      <span class="check"><input type="checkbox" id="normalize">
-        <label for="normalize" style="min-width:0">match loudness across files (-16 LUFS)</label></span>
+
+    <div id="optsShared">
+      <div class="row">
+        <label for="crossfade">crossfade</label>
+        <input type="text" id="crossfade" class="short" value="0">
+        <span class="hint">seconds of overlap-blend; 0 = clean cuts</span>
+      </div>
+      <div class="row">
+        <label></label>
+        <span class="check"><input type="checkbox" id="normalize">
+          <label for="normalize" style="min-width:0">match loudness across files (-16 LUFS)</label></span>
+      </div>
     </div>
   </fieldset>
 
@@ -156,7 +177,7 @@
       <button id="openFolder">show in folder</button>
       <button id="again">run again</button>
     </div>
-    <div style="margin-top:10px" class="totals">timeline</div>
+    <div style="margin-top:10px" class="totals" id="timelineLabel">timeline</div>
     <div id="timeline"></div>
   </fieldset>
 </main>
@@ -215,12 +236,21 @@ function setMode(mode) {
   state.mode = mode;
   $('tabRandom').classList.toggle('on', mode === 'random');
   $('tabConcat').classList.toggle('on', mode === 'concat');
+  $('tabLoop').classList.toggle('on', mode === 'loop');
   $('optsRandom').style.display = mode === 'random' ? '' : 'none';
   $('optsConcat').style.display = mode === 'concat' ? '' : 'none';
+  $('optsLoop').style.display = mode === 'loop' ? '' : 'none';
+  $('optsShared').style.display = mode === 'loop' ? 'none' : '';
+  $('run').textContent = mode === 'loop' ? 'MAKE IT LOOPABLE' : 'MAKE THE MIX';
   persist();
 }
 $('tabRandom').onclick = () => setMode('random');
 $('tabConcat').onclick = () => setMode('concat');
+$('tabLoop').onclick = () => setMode('loop');
+$('loopBrowse').onclick = async () => {
+  const r = await api('/api/browse-file', {});
+  if (r.path) { $('loopFile').value = r.path; persist(); }
+};
 
 // --- run ---
 $('run').onclick = run;
@@ -232,22 +262,31 @@ async function run() {
   $('run').disabled = true;
   $('run').textContent = 'WORKING…';
   try {
-    const res = await fetch('/api/mix', { method: 'POST',
+    const endpoint = state.mode === 'loop' ? '/api/loop' : '/api/mix';
+    const body = state.mode === 'loop'
+      ? {
+          file: $('loopFile').value,
+          outputFolder: $('outFolder').value,
+          format: $('format').value,
+          maxTrim: $('maxTrim').value,
+        }
+      : {
+          mode: state.mode,
+          inputFolder: $('inFolder').value,
+          outputFolder: $('outFolder').value,
+          name: $('outName').value,
+          format: $('format').value,
+          gap: $('gap').value,
+          crossfade: $('crossfade').value,
+          normalize: $('normalize').checked,
+          length: $('length').value,
+          maxGap: $('maxGap').value,
+          seed: $('seed').value,
+          history: $('history').checked,
+        };
+    const res = await fetch(endpoint, { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: state.mode,
-        inputFolder: $('inFolder').value,
-        outputFolder: $('outFolder').value,
-        name: $('outName').value,
-        format: $('format').value,
-        gap: $('gap').value,
-        crossfade: $('crossfade').value,
-        normalize: $('normalize').checked,
-        length: $('length').value,
-        maxGap: $('maxGap').value,
-        seed: $('seed').value,
-        history: $('history').checked,
-      }) });
+      body: JSON.stringify(body) });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -273,7 +312,7 @@ async function run() {
     $('log').textContent += '\n' + err.message;
   } finally {
     $('run').disabled = false;
-    $('run').textContent = 'MAKE THE MIX';
+    $('run').textContent = state.mode === 'loop' ? 'MAKE IT LOOPABLE' : 'MAKE THE MIX';
   }
 }
 
@@ -281,6 +320,25 @@ function showResult(d) {
   state.lastOut = d.outPath;
   $('log').textContent = '';
   $('resultName').textContent = d.outName + '  (' + fmt(d.totalDur) + ')';
+  $('player').loop = d.kind === 'loop';
+  if (d.kind === 'loop') {
+    const meta = [
+      'kept ' + fmt(d.startSec) + ' → ' + fmt(d.endSec) + ' of ' + fmt(d.durSec) +
+        '  (' + Math.round(100 * d.keptSec / d.durSec) + '% of the track)',
+      'trimmed ' + d.startSec.toFixed(1) + 's from the start, ' + (d.durSec - d.endSec).toFixed(1) + 's from the end',
+      'seam: ' + Math.round(d.score * 100) + '% texture match — better cut pair than ' +
+        Math.round(d.percentile * 100) + '% of the alternatives',
+      'the player below repeats forever — listen across the restart',
+    ];
+    $('resultMeta').innerHTML = meta.map(m => m.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
+    $('timeline').textContent = '';
+    $('timelineLabel').style.display = 'none';
+    $('player').src = '/api/audio?p=' + encodeURIComponent(d.outPath);
+    $('result').style.display = '';
+    $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return;
+  }
+  $('timelineLabel').style.display = '';
   const meta = [];
   if (d.seed) meta.push('seed ' + d.seed + ' — paste it into the seed box to recreate this mix');
   if (d.novelty != null) meta.push('novelty: ' + Math.round(d.novelty * 100) + '% different from your previous mixes');
@@ -311,7 +369,7 @@ function showResult(d) {
 $('openFolder').onclick = () => { if (state.lastOut) api('/api/open', { file: state.lastOut }); };
 
 // --- settings persistence + server heartbeat ---
-const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade'];
+const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade', 'loopFile', 'maxTrim'];
 function persist() {
   const data = { mode: state.mode };
   for (const f of FIELDS) data[f] = $(f).value;

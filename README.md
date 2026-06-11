@@ -1,10 +1,12 @@
 # audio-splicer
 
-Windows tool for merging audio files into one, two ways:
+Windows tool for merging audio files into one, three ways:
 
 1. **`splice concat`** — joins files end-to-end in order (optionally with a fixed gap).
 2. **`splice random`** — splices files in random order to an exact target length, with
    randomized gaps and a per-file repeat cap.
+3. **`splice loop`** — crops a track at the start and end so it loops seamlessly,
+   keeping it as long as possible.
 
 ffmpeg/ffprobe ship inside `node_modules` (`ffmpeg-static`), so there is nothing to
 install system-wide. Input can be any mix of `.ogg .oga .oog .mp3 .wav .flac .m4a .aac
@@ -67,6 +69,29 @@ Rules implemented:
   time can't be filled becomes silence at the **start and end** of the mix, which is
   where gaps longer than 5 s are allowed to live. Output length is sample-exact.
 
+## Loopable crop
+
+```
+splice loop ambience.ogg                      # writes ambience-loop.ogg next to it
+splice loop track.wav -o loop.mp3 --max-trim 45
+splice loop track.ogg --dry-run               # report the cuts without rendering
+```
+
+When a looped player jumps from the end back to the start, the listener hears the
+audio after the start cut where the audio after the end cut would have continued —
+so the best loop cut is the pair of points whose following ~1.5s match in spectral
+texture and loudness. The analyzer fingerprints the track in ~46ms frames, scores
+every candidate start/end pair on that, and keeps the **longest** crop within a
+small tolerance of the best match ("most loopable, as long as possible"). The
+winning pair is then refined to sample level — waveform cross-correlation alignment
+plus zero-crossing snap, with a ~3ms safety fade — so the seam can't click.
+
+Options: `--max-trim <sec|%>` caps how much may be cut from each end (default 30%,
+capped at 90s); `--window <sec>` sets how much context is compared around the seam.
+The report shows the kept range, the seam's texture-match score, and how the chosen
+pair ranks against all the alternatives. In the app ("loop a track" tab) the result
+player repeats forever so you can audition the restart by ear.
+
 ## Optional polish flags (both modes)
 
 - **`--crossfade <sec>`** — equal-power fades instead of hard cuts. In concat mode,
@@ -101,6 +126,7 @@ The chosen plan, per-file use counts, and novelty score print before rendering.
 - `app/server.mjs` + `app/ui.html` — the windowed app (`Audio Splicer.vbs` launches it)
 - `bin/splice.mjs` — CLI (arg parsing, folder expansion, history, plan printout)
 - `lib/engine.mjs` — pure plan math (cap, gaps, novelty distance) + ffmpeg render
+- `lib/loop.mjs` — loopable-crop analysis (FFT features, pair search, sample refine)
 - `tools/run-tests.mjs` — engine/CLI self-test: builds tone fixtures in three formats,
   renders both modes, checks cap/gap/length/novelty/reproducibility/pollution rules
 - `tools/test-app.mjs` — app self-test: boots the server headless and drives the API

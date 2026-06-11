@@ -98,6 +98,18 @@ try {
   check('mix saved into input folder is excluded from the next mix',
     Math.abs(self2Dur - 19) < 0.15, `got ${self2Dur.toFixed(2)}s (38 would mean pollution)`);
 
+  // loop endpoint: run on the synthetic loop fixture (built by run-tests.mjs)
+  const loopSrc = path.join(fix, 'loop', 'loopsrc.wav');
+  const loopRes = await post('/api/loop', { file: loopSrc, outputFolder: out, format: '.ogg' });
+  const loopDone = (await loopRes.text()).trim().split('\n').map(l => JSON.parse(l)).find(l => l.done)?.done;
+  check('loop endpoint returns cuts + quality', !!loopDone &&
+    loopDone.kind === 'loop' && loopDone.keptSec > 7 && loopDone.score > 0.9,
+    JSON.stringify(loopDone));
+  check('loop output named <track>-loop', loopDone?.outName === 'loopsrc-loop.ogg', loopDone?.outName);
+  const loopDur = loopDone ? await probeDuration(loopDone.outPath) : 0;
+  check('loop render matches the analysis length', Math.abs(loopDur - loopDone.keptSec) < 0.1,
+    `got ${loopDur.toFixed(2)} vs ${loopDone?.keptSec?.toFixed(2)}`);
+
   // bad input surfaces as a streamed error, not a hang
   const bad = await post('/api/mix', { mode: 'random', inputFolder: fix, outputFolder: out, length: '' });
   const badLines = (await bad.text()).trim().split('\n').map(l => JSON.parse(l));

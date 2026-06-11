@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
 import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
+import { findLoopCrop } from '../lib/loop.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -165,6 +166,46 @@ check('own outputs in the input folder are excluded from the next mix',
   Math.abs(polDur - 19) < 0.15, `got ${polDur.toFixed(2)}s (38 would mean pollution)`);
 await rm(path.join(fix, 'pol.ogg'), { force: true });
 await rm(path.join(fix, 'pol-2.ogg'), { force: true });
+
+// --- 9. loop crop: synthetic track with one known-correct loop ---
+// P(1900Hz,1s) M(600Hz,3s) Q(250Hz,4s) M(600Hz,3s) R(3400Hz,1s) = 12s.
+// The only seamless cut pair: start of first M -> same offset into second M.
+// Longest such loop: s ~= 1.0, e ~= 9.5 (limited by the 1.5s context before R).
+await mkdir(path.join(fix, 'loop'), { recursive: true });
+await tone(1900, 1, 'loop/p.wav');
+await tone(600, 3, 'loop/m.wav');
+await tone(250, 4, 'loop/q.wav');
+await tone(3400, 1, 'loop/r.wav');
+const loopSrc = path.join(fix, 'loop', 'loopsrc.wav');
+await splice(['concat',
+  path.join(fix, 'loop', 'p.wav'), path.join(fix, 'loop', 'm.wav'),
+  path.join(fix, 'loop', 'q.wav'), path.join(fix, 'loop', 'm.wav'),
+  path.join(fix, 'loop', 'r.wav'), '-o', loopSrc]);
+
+const lc = await findLoopCrop(loopSrc);
+check('loop: start cut lands at the first motif (~1.0s)',
+  lc.startSec > 0.85 && lc.startSec < 1.4, `got ${lc.startSec.toFixed(2)}s`);
+check('loop: end cut lands inside the second motif (~9.5s)',
+  lc.endSec > 9.0 && lc.endSec < 9.8, `got ${lc.endSec.toFixed(2)}s`);
+check('loop: keeps the longest seamless span (~8.5s)',
+  lc.keptSec > 7.8 && lc.keptSec < 8.9, `got ${lc.keptSec.toFixed(2)}s`);
+check('loop: seam texture match is near-perfect on identical motifs',
+  lc.score > 0.9, `got ${lc.score.toFixed(3)}`);
+// note: ~20% of candidate pairs here tie the winner by design (any M1 offset
+// pairs perfectly with the same M2 offset), so the bar is 0.6, not 0.9
+check('loop: chosen cut pair beats most alternative cut pairs',
+  lc.percentile > 0.6, `got ${(lc.percentile * 100).toFixed(0)}%`);
+
+const lc2 = await findLoopCrop(loopSrc);
+check('loop: analysis is deterministic',
+  lc.startSec === lc2.startSec && lc.endSec === lc2.endSec);
+
+// end-to-end through the CLI: renders the crop at the found cuts
+const loopLog = await splice(['loop', loopSrc, '-o', path.join(out, 'looped.ogg')]);
+const loopDur = await probeDuration(path.join(out, 'looped.ogg'));
+check('loop: CLI renders crop matching the analysis',
+  Math.abs(loopDur - lc.keptSec) < 0.1, `got ${loopDur.toFixed(2)}s vs ${lc.keptSec.toFixed(2)}s`);
+check('loop: CLI reports the seam quality', /texture match/.test(loopLog));
 
 // --- error path: nothing fits ---
 let threw = false;
