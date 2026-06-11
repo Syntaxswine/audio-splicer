@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
 import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
-import { findLoopCrop } from '../lib/loop.mjs';
+import { findLoopCrop, detectBeats, decodeMono } from '../lib/loop.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -206,6 +206,40 @@ const loopDur = await probeDuration(path.join(out, 'looped.ogg'));
 check('loop: CLI renders crop matching the analysis',
   Math.abs(loopDur - lc.keptSec) < 0.1, `got ${loopDur.toFixed(2)}s vs ${lc.keptSec.toFixed(2)}s`);
 check('loop: CLI reports the seam quality', /texture match/.test(loopLog));
+
+// --- 10. beat detection: synthetic 120 BPM kick track ---
+// decaying 170Hz thump every 0.5s for 24s; detector must measure ~120 BPM
+const clickSrc = path.join(fix, 'loop', 'click120.wav');
+await run(ffmpegPath, ['-hide_banner', '-y', '-f', 'lavfi',
+  '-i', "aevalsrc='sin(2*PI*170*t)*exp(-30*mod(t,0.5))*lt(mod(t,0.5),0.2)':d=24:s=44100",
+  clickSrc]);
+const clickPcm = await decodeMono(clickSrc);
+const beat = detectBeats(clickPcm);
+check('beats: 120 BPM kick track measured within +/-4 BPM',
+  beat.bpm > 116 && beat.bpm < 124, `got ${beat.bpm?.toFixed(1)} BPM`);
+check('beats: confident pulse on rhythmic material',
+  beat.confidence > 0.5, `got ${(beat.confidence * 100).toFixed(0)}%`);
+
+// loop crop on it must snap to the grid: whole number of beats kept
+const blc = await findLoopCrop(clickSrc);
+check('beats: loop crop reports beat alignment', blc.beatAligned === true,
+  JSON.stringify({ aligned: blc.beatAligned, conf: blc.beatConfidence }));
+// judge against the fixture's TRUE period (0.5s) — the measured tempo carries
+// ~0.5% error, but the sample-level xcorr refine locks cuts to the track's
+// real periodicity, so the kept length must be whole TRUE beats
+const beatMod = blc.keptSec % 0.5;
+const offGrid = Math.min(beatMod, 0.5 - beatMod);
+check('beats: kept length is a whole number of true beats (+/-40ms)',
+  offGrid < 0.04, `off by ${(offGrid * 1000).toFixed(0)}ms (kept ${blc.keptSec.toFixed(3)}s)`);
+
+// non-rhythmic material must fall back to texture matching, not fake a grid
+check('beats: tonal track falls back to texture matching',
+  lc.beatAligned === false && lc.beatConfidence < 0.35,
+  `aligned=${lc.beatAligned} conf=${(lc.beatConfidence * 100).toFixed(0)}%`);
+
+// --no-beats forces texture mode even on rhythmic material
+const noBeatLog = await splice(['loop', clickSrc, '--dry-run', '--no-beats']);
+check('beats: --no-beats suppresses the beat grid', !/BPM — loop is exactly/.test(noBeatLog));
 
 // --- error path: nothing fits ---
 let threw = false;

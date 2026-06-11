@@ -39,8 +39,12 @@ Usage:
       long as possible. Finds the cut pair whose surrounding audio matches best
       (texture + loudness), then aligns the cuts to the waveform so the seam
       doesn't click. Default output: <track>-loop.<same ext>.
+      When the track has a confident beat (drums, steady pulse), cuts snap to
+      the detected beat grid so the loop is a whole number of beats; otherwise
+      it falls back to pure texture matching automatically.
       --max-trim <s|%>    most to cut from EACH end (default 30% capped at 90s)
       --window <sec>      seconds of context compared around the seam (default 1.5)
+      --no-beats          never snap to beats, texture matching only
 
 Shared options:
   -o, --output <file>     output path; extension picks the format (.ogg .mp3 .wav
@@ -144,6 +148,7 @@ async function main() {
       'dry-run': { type: 'boolean', default: false },
       'max-trim': { type: 'string' },
       window: { type: 'string', default: '1.5' },
+      'no-beats': { type: 'boolean', default: false },
     },
   });
 
@@ -159,12 +164,16 @@ async function main() {
     const r = await findLoopCrop(track, {
       maxTrim: opts['max-trim'],
       windowSec: parseFloat(opts.window),
+      useBeats: !opts['no-beats'],
       onLog: m => console.log(m),
     });
     console.log(`\ntrack: ${fmtTime(r.durSec)}`);
     console.log(`keep:  ${fmtTime(r.startSec)} -> ${fmtTime(r.endSec)}  (${fmtTime(r.keptSec)}, ${(100 * r.keptSec / r.durSec).toFixed(0)}% of the track)`);
     console.log(`trim:  ${r.startSec.toFixed(2)}s from the start, ${(r.durSec - r.endSec).toFixed(2)}s from the end`);
     console.log(`seam:  ${(r.score * 100).toFixed(0)}% texture match; better cut pair than ${(r.percentile * 100).toFixed(0)}% of the alternatives`);
+    if (r.beatAligned) {
+      console.log(`beats: ${r.bpm.toFixed(1)} BPM — loop is exactly ${r.beatsKept} beats, cuts on the grid`);
+    }
     if (!opts['dry-run']) {
       await renderLoopCrop(track, outPath, r.startSec, r.endSec);
       console.log(`wrote ${outPath}`);

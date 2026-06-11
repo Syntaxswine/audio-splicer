@@ -275,6 +275,7 @@ async function handleLoop(req, res) {
         outPath, outName: path.basename(outPath),
         durSec: r.durSec, startSec: r.startSec, endSec: r.endSec, keptSec: r.keptSec,
         score: r.score, percentile: r.percentile,
+        bpm: r.bpm, beatAligned: r.beatAligned, beatsKept: r.beatsKept,
         totalDur: r.keptSec,
       },
     });

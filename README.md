@@ -86,11 +86,22 @@ small tolerance of the best match ("most loopable, as long as possible"). The
 winning pair is then refined to sample level — waveform cross-correlation alignment
 plus zero-crossing snap, with a ~3ms safety fade — so the seam can't click.
 
+**Beat detection** runs automatically: an onset-strength envelope (spectral flux)
+is autocorrelated to find the tempo (with a prior near 120 BPM to settle octave
+ambiguity) and a comb fit finds the beat phase. When the pulse is confident, the
+candidate cuts snap to the beat grid, so the loop is a whole number of beats and
+both cuts share beat phase — rhythmic material doesn't stumble at the restart. The
+sample-level refine then locks the cuts to the track's true periodicity, correcting
+any small tempo-measurement drift. Material without a steady pulse (ambience, field
+recordings) falls back to pure texture matching automatically; `--no-beats` forces
+that off for rhythmic tracks too.
+
 Options: `--max-trim <sec|%>` caps how much may be cut from each end (default 30%,
 capped at 90s); `--window <sec>` sets how much context is compared around the seam.
-The report shows the kept range, the seam's texture-match score, and how the chosen
-pair ranks against all the alternatives. In the app ("loop a track" tab) the result
-player repeats forever so you can audition the restart by ear.
+The report shows the kept range, the seam's texture-match score, how the chosen
+pair ranks against all the alternatives, and — when beat-aligned — the BPM and
+beat count. In the app ("loop a track" tab) the result player repeats forever so
+you can audition the restart by ear.
 
 ## Optional polish flags (both modes)
 

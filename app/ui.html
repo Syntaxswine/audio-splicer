@@ -328,8 +328,11 @@ function showResult(d) {
       'trimmed ' + d.startSec.toFixed(1) + 's from the start, ' + (d.durSec - d.endSec).toFixed(1) + 's from the end',
       'seam: ' + Math.round(d.score * 100) + '% texture match — better cut pair than ' +
         Math.round(d.percentile * 100) + '% of the alternatives',
-      'the player below repeats forever — listen across the restart',
     ];
+    if (d.beatAligned) {
+      meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats, cuts on the grid');
+    }
+    meta.push('the player below repeats forever — listen across the restart');
     $('resultMeta').innerHTML = meta.map(m => m.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
     $('timeline').textContent = '';
     $('timelineLabel').style.display = 'none';
