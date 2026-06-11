@@ -4,8 +4,9 @@
 // don't pile up node processes.
 
 import http from 'node:http';
-import { readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, readdir, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -61,32 +62,75 @@ async function scanFolder(folder, excludeBase = null) {
   return files;
 }
 
-// Native Windows file picker for loop mode.
-async function pickFile() {
-  const filter = 'Audio files|*.ogg;*.oga;*.oog;*.mp3;*.wav;*.flac;*.m4a;*.aac;*.opus;*.wma;*.aiff;*.aif;*.webm;*.mka|All files|*.*';
-  const script =
-    `Add-Type -AssemblyName System.Windows.Forms; ` +
-    `$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }; ` +
-    `$d = New-Object System.Windows.Forms.OpenFileDialog; ` +
-    `$d.Title = 'Choose the track to make loopable'; $d.Filter = '${filter}'; ` +
-    `if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }`;
-  const { stdout } = await pexec('powershell', ['-NoProfile', '-STA', '-Command', script]);
-  return stdout.trim() || null;
+// Run a WinForms picker. The dialog must open IN FRONT of the borderless Edge
+// app window, so we create a real owner form, make it topmost, and actually
+// Show()+Activate() it (an unshown TopMost form does NOT pull a child dialog
+// forward — that was the "browse does nothing" bug). $setup builds $d and emits
+// the chosen path. Script runs from a temp .ps1 to avoid -Command quoting.
+async function runPicker(setup) {
+  // The dialog has to land IN FRONT of the borderless Edge app window. A
+  // background process can't steal foreground focus from another process's
+  // window (Windows foreground lock — that was the "browse does nothing" bug:
+  // dialog opened behind, taskbar button just flashed). The fix that does work
+  // regardless of focus: a genuinely TopMost owner window renders above all
+  // non-topmost windows (Edge is non-topmost), and a modal dialog owned by it
+  // inherits that z-order. The owner must be ON-SCREEN and shown to be a real
+  // topmost window (Opacity 0 keeps it invisible; centering keeps the dialog,
+  // which centers on its owner, on the primary monitor).
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.FormBorderStyle = 'None'
+$owner.StartPosition = 'CenterScreen'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Opacity = 0
+$owner.Show()
+$owner.BringToFront()
+$owner.Activate()
+[System.Windows.Forms.Application]::DoEvents()
+try {
+${setup}
+} finally {
+  $owner.Close()
+  $owner.Dispose()
+}
+`;
+  const dir = await mkdtemp(path.join(tmpdir(), 'splice-pick-'));
+  const scriptPath = path.join(dir, 'pick.ps1');
+  await writeFile(scriptPath, script, 'utf8');
+  try {
+    const { stdout } = await pexec('powershell',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath]);
+    return stdout.trim() || null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
-// Native Windows folder picker (the TopMost owner form keeps it in front).
+async function pickFile() {
+  const filter = 'Audio files|*.ogg;*.oga;*.oog;*.mp3;*.wav;*.flac;*.m4a;*.aac;*.opus;*.wma;*.aiff;*.aif;*.webm;*.mka|All files|*.*';
+  return runPicker(`
+  $d = New-Object System.Windows.Forms.OpenFileDialog
+  $d.Title = 'Choose the track to make loopable'
+  $d.Filter = '${filter}'
+  if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }
+`);
+}
+
 async function pickFolder(kind) {
   const desc = kind === 'output'
     ? 'Choose where the mix should be saved'
     : 'Choose the folder with your audio files';
-  const script =
-    `Add-Type -AssemblyName System.Windows.Forms; ` +
-    `$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }; ` +
-    `$d = New-Object System.Windows.Forms.FolderBrowserDialog; ` +
-    `$d.Description = '${desc}'; $d.ShowNewFolderButton = $true; ` +
-    `if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }`;
-  const { stdout } = await pexec('powershell', ['-NoProfile', '-STA', '-Command', script]);
-  return stdout.trim() || null;
+  return runPicker(`
+  $d = New-Object System.Windows.Forms.FolderBrowserDialog
+  $d.Description = '${desc}'
+  $d.ShowNewFolderButton = $true
+  if ($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }
+`);
 }
 
 async function loadHistory(historyPath) {
