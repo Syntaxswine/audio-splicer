@@ -130,6 +130,17 @@ try {
   check('manual slice renders at the picked length',
     Math.abs(manDur - manDone.keptSec) < 0.1, `got ${manDur.toFixed(2)}`);
 
+  // forced seam fade is honored but clamped to the available lead-in
+  // (start ~1.0s, so a requested 2s blend can only use ~1s)
+  const fade = await post('/api/loop', {
+    file: loopSrc, outputFolder: out, format: '.ogg',
+    startSec: 1.0, endSec: 9.5, seamFade: '2',
+  });
+  const fadeDone = (await fade.text()).trim().split('\n').map(l => JSON.parse(l)).find(l => l.done)?.done;
+  check('forced seam fade reports the clamped blend actually applied',
+    fadeDone?.seamFadeSec > 0.7 && fadeDone?.seamFadeSec <= 1.05,
+    `got ${fadeDone?.seamFadeSec}`);
+
   // bad input surfaces as a streamed error, not a hang
   const bad = await post('/api/mix', { mode: 'random', inputFolder: fix, outputFolder: out, length: '' });
   const badLines = (await bad.text()).trim().split('\n').map(l => JSON.parse(l));

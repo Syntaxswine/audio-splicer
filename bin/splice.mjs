@@ -9,7 +9,7 @@ import {
   AUDIO_EXTENSIONS, probeDuration, makeRng, parseLength, fmtTime, mixArtifactRegex,
   buildConcatPlan, buildRandomPlan, planSequence, pickNovelPlan, renderPlan,
 } from '../lib/engine.mjs';
-import { findLoopCrop, renderLoopCrop } from '../lib/loop.mjs';
+import { findLoopCrop, renderLoopCrop, autoSeamFade } from '../lib/loop.mjs';
 
 const HISTORY_NAME = '.splice-history.json';
 const HISTORY_LIMIT = 200;
@@ -48,8 +48,8 @@ Usage:
                           crop above the bar wins; if nothing clears it the
                           report says so plainly
       --seam-fade <sec>   blend the trimmed-off lead-in under the loop's tail so
-                          the wrap plays the track's own real transition; auto-
-                          engages at 1s on weak seams (0 disables)
+                          the wrap plays the track's own real transition; auto
+                          scales 1-4s with seam weakness (0 = hard cut)
       --no-beats          never snap to beats, texture matching only
 
 Shared options:
@@ -183,17 +183,21 @@ async function main() {
     if (r.beatAligned) {
       console.log(`beats: ${r.bpm.toFixed(1)} BPM — loop is exactly ${r.beatsKept} beats, cuts on the grid`);
     }
+    const floorVal = opts.quality != null && opts.quality !== '' ? parseFloat(opts.quality) : undefined;
     const seamFade = opts['seam-fade'] != null
       ? Math.max(0, parseFloat(opts['seam-fade']) || 0)
-      : (r.weakSeam && r.startSec > 1.01 ? 1 : 0);
-    if (r.weakSeam) {
-      console.log(seamFade > 0
-        ? `note:  weak seam — blending the trimmed lead-in under the last ${seamFade.toFixed(1)}s so the wrap plays the track's own transition (--seam-fade 0 to disable)`
-        : 'note:  WEAK SEAM — this track may not loop cleanly; try a larger --max-trim, a lower --quality, or --seam-fade');
+      : autoSeamFade(r.score, r.startSec, floorVal);
+    if (r.weakSeam && seamFade <= 0) {
+      console.log('note:  WEAK SEAM — this track may not loop cleanly; try a larger --max-trim, a lower --quality, or --seam-fade');
     }
     if (!opts['dry-run']) {
-      await renderLoopCrop(track, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
+      const { seamFadeSec: used } = await renderLoopCrop(track, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
+      if (used > 0) {
+        console.log(`blend: trimmed lead-in mixed under the last ${used.toFixed(1)}s — the wrap plays the track's own transition (--seam-fade 0 for a hard cut)`);
+      }
       console.log(`wrote ${outPath}`);
+    } else if (seamFade > 0) {
+      console.log(`blend: would mix the trimmed lead-in under the last ~${seamFade.toFixed(1)}s (auto-scaled to seam weakness; --seam-fade overrides)`);
     }
     return;
   }

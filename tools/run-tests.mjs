@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
 import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
-import { findLoopCrop, renderLoopCrop, detectBeats, decodeMono, featurize, selectLoopPair } from '../lib/loop.mjs';
+import { findLoopCrop, renderLoopCrop, detectBeats, decodeMono, featurize, selectLoopPair, autoSeamFade } from '../lib/loop.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -253,6 +253,16 @@ check('map: brightest cell is the motif pair',
 // pairs shorter than the minimum loop are marked not-a-candidate (0)
 check('map: too-short corner marked invalid',
   mapBytes[(lMap.nS - 1) * lMap.nE + 0] === 0);
+
+// --- 9a4. adaptive seam fade: stronger blends for weaker seams ---
+check('seam fade auto: clean seam gets no blend', autoSeamFade(0.90, 40) === 0);
+check('seam fade auto: near-miss gets ~1s', Math.abs(autoSeamFade(0.84, 40) - 1.1) < 0.01,
+  `got ${autoSeamFade(0.84, 40)}`);
+check('seam fade auto: 65% seam gets ~3s', Math.abs(autoSeamFade(0.65, 40) - 3) < 0.01,
+  `got ${autoSeamFade(0.65, 40)}`);
+check('seam fade auto: capped at 4s', autoSeamFade(0.30, 40) === 4);
+check('seam fade auto: clamped to the trimmed lead-in that exists',
+  Math.abs(autoSeamFade(0.65, 1.5) - 1.4) < 0.01, `got ${autoSeamFade(0.65, 1.5)}`);
 
 // --- 9b. pair selection: longest-above-floor, not best-score-with-slack ---
 // (best-with-slack degenerates on real music: self-similarity decays with

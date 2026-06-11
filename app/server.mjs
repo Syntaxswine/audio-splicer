@@ -18,8 +18,15 @@ import {
 } from '../lib/engine.mjs';
 import {
   findLoopCrop, renderLoopCrop, decodeMono, featurize, scorePairSeconds,
-  refineSeconds, ANALYSIS_RATE,
+  refineSeconds, autoSeamFade, ANALYSIS_RATE,
 } from '../lib/loop.mjs';
+
+// "auto" / blank -> scale the wrap-blend with seam weakness; a number forces it
+function resolveSeamFade(requested, score, startSec) {
+  const v = String(requested ?? '').trim().toLowerCase();
+  if (v === '' || v === 'auto') return autoSeamFade(score, startSec);
+  return Math.max(0, parseFloat(v) || 0);
+}
 
 const PORT = parseInt(process.env.SPLICE_PORT || '8741', 10);
 const appDir = path.dirname(fileURLToPath(import.meta.url));
@@ -278,9 +285,9 @@ async function handleLoop(req, res) {
       const score = scorePairSeconds(F, +q.startSec, +q.endSec);
       const { startSec, endSec } = refineSeconds(x, +q.startSec, +q.endSec);
       const weakSeam = score < 0.85;
-      const seamFade = weakSeam && startSec > 1.01 ? 1 : 0;
+      const seamFade = resolveSeamFade(q.seamFade, score, startSec);
       send({ log: 'rendering crop...' });
-      await renderLoopCrop(file, outPath, startSec, endSec, { seamFadeSec: seamFade });
+      const { seamFadeSec: fadeUsed } = await renderLoopCrop(file, outPath, startSec, endSec, { seamFadeSec: seamFade });
       send({
         done: {
           kind: 'loop', manual: true,
@@ -288,7 +295,7 @@ async function handleLoop(req, res) {
           durSec, startSec, endSec, keptSec: endSec - startSec,
           score, percentile: null,
           bpm: null, beatAligned: false, beatsKept: null,
-          weakSeam, seamFadeSec: seamFade,
+          weakSeam, seamFadeSec: fadeUsed,
           totalDur: endSec - startSec,
         },
       });
@@ -299,11 +306,10 @@ async function handleLoop(req, res) {
       maxTrim: q.maxTrim || null, quality: q.quality || null, withMap: true,
       onLog: m => send({ log: m }),
     });
-    // weak seam: auto-blend the trimmed lead-in under the tail so the wrap
-    // plays the track's own real transition
-    const seamFade = r.weakSeam && r.startSec > 1.01 ? 1 : 0;
+    // wrap-blend the trimmed lead-in under the tail; auto scales with seam weakness
+    const seamFade = resolveSeamFade(q.seamFade, r.score, r.startSec);
     send({ log: 'rendering crop...' });
-    await renderLoopCrop(file, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
+    const { seamFadeSec: fadeUsed } = await renderLoopCrop(file, outPath, r.startSec, r.endSec, { seamFadeSec: seamFade });
     send({
       done: {
         kind: 'loop',
@@ -311,7 +317,7 @@ async function handleLoop(req, res) {
         durSec: r.durSec, startSec: r.startSec, endSec: r.endSec, keptSec: r.keptSec,
         score: r.score, percentile: r.percentile,
         bpm: r.bpm, beatAligned: r.beatAligned, beatsKept: r.beatsKept,
-        weakSeam: r.weakSeam, seamFadeSec: seamFade,
+        weakSeam: r.weakSeam, seamFadeSec: fadeUsed,
         map: r.map,
         totalDur: r.keptSec,
       },

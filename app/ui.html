@@ -144,6 +144,11 @@
         <input type="text" id="maxTrim" class="short" value="30%">
         <span class="hint">most to cut from EACH end — seconds or % of the track</span>
       </div>
+      <div class="row">
+        <label for="seamFade">seam fade</label>
+        <input type="text" id="seamFade" class="short" value="auto">
+        <span class="hint">seconds of wrap-blend at the loop point — auto scales 1–4s with seam weakness; 0 = hard cut</span>
+      </div>
       <div class="hint" style="margin:6px 0 2px">
         Finds the start/end crop whose join sounds seamless when the track repeats,
         keeping it as long as possible. Saved next to the track as
@@ -309,6 +314,7 @@ async function run() {
           outputFolder: $('outFolder').value,
           format: $('format').value,
           maxTrim: $('maxTrim').value,
+          seamFade: $('seamFade').value,
         }
       : {
           mode: state.mode,
@@ -352,10 +358,11 @@ function showResult(d) {
     if (d.beatAligned) {
       meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats, cuts on the grid');
     }
-    if (d.weakSeam) {
-      meta.push(d.seamFadeSec > 0
-        ? '⚠ no strongly matching cut pair — blended the trimmed lead-in under the last ' + d.seamFadeSec.toFixed(1) + 's, so the wrap plays the track\'s own transition'
-        : '⚠ weak seam — no cut pair matched strongly; this may not loop cleanly. A larger max trim gives the search more room.');
+    if (d.seamFadeSec > 0) {
+      meta.push('seam blended over ' + d.seamFadeSec.toFixed(1) + 's of the trimmed lead-in — the wrap plays the track\'s own transition' +
+        (d.weakSeam ? ' (auto-scaled to the weak match; the seam fade field overrides)' : ''));
+    } else if (d.weakSeam) {
+      meta.push('⚠ weak seam with no blend — this may not loop cleanly. Set seam fade to "auto" or a few seconds.');
     }
     meta.push('the player below repeats forever — listen across the restart');
     $('resultMeta').innerHTML = meta.map(m => m.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
@@ -503,6 +510,7 @@ $('renderSlice').onclick = async () => {
       file: $('loopFile').value,
       outputFolder: $('outFolder').value,
       format: $('format').value,
+      seamFade: $('seamFade').value,
       startSec: state.mapSel.sSec,
       endSec: state.mapSel.eSec,
     });
@@ -516,7 +524,7 @@ $('renderSlice').onclick = async () => {
 };
 
 // --- settings persistence + server heartbeat ---
-const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade', 'loopFile', 'maxTrim'];
+const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade', 'loopFile', 'maxTrim', 'seamFade'];
 function persist() {
   const data = { mode: state.mode };
   for (const f of FIELDS) data[f] = $(f).value;
