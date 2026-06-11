@@ -80,11 +80,23 @@ splice loop track.ogg --dry-run               # report the cuts without renderin
 When a looped player jumps from the end back to the start, the listener hears the
 audio after the start cut where the audio after the end cut would have continued —
 so the best loop cut is the pair of points whose following ~1.5s match in spectral
-texture and loudness. The analyzer fingerprints the track in ~46ms frames, scores
-every candidate start/end pair on that, and keeps the **longest** crop within a
-small tolerance of the best match ("most loopable, as long as possible"). The
-winning pair is then refined to sample level — waveform cross-correlation alignment
-plus zero-crossing snap, with a ~3ms safety fade — so the seam can't click.
+texture, **harmony** (pitch-class chroma — two points on different chords don't
+count as alike no matter how similar the instrumentation), and loudness. The
+analyzer fingerprints the track in ~46ms frames, scores every candidate start/end
+pair, and keeps the **longest pair above an absolute quality bar** (`--quality`,
+default 0.85). The bar matters: self-similarity decays with distance in real music,
+so "best score wins" would always pick two nearby points and slam the cuts into the
+trim limits. Above the bar, length decides. The winning pair is then refined to
+sample level — waveform cross-correlation alignment plus zero-crossing snap, with a
+~3ms safety fade — so the seam can't click.
+
+**When no pair clears the bar, the tool says so** (weak-seam warning) instead of
+reporting a confident match, and auto-engages a **seam fade** (`--seam-fade`,
+default 1s on weak seams): the trimmed-off lead-in — the audio that naturally plays
+*into* the start cut — is blended under the loop's final second, so the wrap plays
+the track's own real transition and is sample-continuous by construction. That's
+the right tool for tracks that evolve continuously and simply don't contain two
+strongly-alike distant moments.
 
 **Beat detection** runs automatically: an onset-strength envelope (spectral flux)
 is autocorrelated to find the tempo (with a prior near 120 BPM to settle octave
