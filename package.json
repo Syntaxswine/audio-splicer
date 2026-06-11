@@ -1,6 +1,6 @@
 {
   "name": "audio-splicer",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Merge audio files: sequential concat or fixed-length random splice with novelty across runs",
   "type": "module",
   "bin": {
