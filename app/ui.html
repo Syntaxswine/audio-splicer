@@ -187,7 +187,8 @@
     <div id="mapWrap" style="display:none">
       <div style="margin-top:12px" class="totals">
         similarity map — every possible start cut (→) paired with every possible end cut (↑);
-        greener = those two slice points sound more alike. click a bright spot to slice there instead.
+        greener = those two slice points sound more alike, dashed lines = detected section breaks.
+        a bright cell where two dashes cross is a break-to-break slice — click any spot to slice there instead.
       </div>
       <canvas id="map" width="640" height="420"
         style="width:100%;margin-top:4px;border:1px solid var(--line);border-radius:3px;background:#fff;cursor:crosshair"></canvas>
@@ -355,8 +356,12 @@ function showResult(d) {
       'seam: ' + Math.round(d.score * 100) + '% texture match' +
         (d.percentile != null ? ' — better cut pair than ' + Math.round(d.percentile * 100) + '% of the alternatives' : ''),
     ];
+    if (d.cutsOn) {
+      meta.push('cuts placed on ' + d.cutsOn +
+        (d.breaks && d.breaks.length ? '  (section breaks at ' + d.breaks.map(t => fmt(t)).join(', ') + ')' : ''));
+    }
     if (d.beatAligned) {
-      meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats, cuts on the grid');
+      meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats');
     }
     if (d.seamFadeSec > 0) {
       meta.push('seam blended over ' + d.seamFadeSec.toFixed(1) + 's of the trimmed lead-in — the wrap plays the track\'s own transition' +
@@ -370,6 +375,7 @@ function showResult(d) {
     $('timelineLabel').style.display = 'none';
     $('player').src = '/api/audio?p=' + encodeURIComponent(d.outPath);
     $('mapActions').style.display = 'none';
+    if (d.breaks) state.breaks = d.breaks;
     if (d.map) drawMap(d.map, d.startSec, d.endSec);                 // fresh analysis
     else if (state.map) drawMap(state.map, d.startSec, d.endSec);    // manual slice: keep map, move marker
     // 'block', not '': the stylesheet hides #result, and '' would fall back to it
@@ -380,6 +386,7 @@ function showResult(d) {
   $('timelineLabel').style.display = '';
   $('mapWrap').style.display = 'none';
   state.map = null;
+  state.breaks = null;
   const meta = [];
   if (d.seed) meta.push('seed ' + d.seed + ' — paste it into the seed box to recreate this mix');
   if (d.novelty != null) meta.push('novelty: ' + Math.round(d.novelty * 100) + '% different from your previous mixes');
@@ -455,6 +462,25 @@ function drawMap(map, pickS, pickE) {
       g.fillStyle = mapColor(v);
       g.fillRect(i * cw, cv.height - (j + 1) * ch, Math.ceil(cw), Math.ceil(ch));
     }
+  }
+  // section breaks: dashed lines on both axes — bright cells at a crossing are
+  // break-to-break slices, the most natural places to loop
+  if (state.breaks && state.breaks.length) {
+    g.save();
+    g.strokeStyle = 'rgba(43,42,39,0.35)';
+    g.lineWidth = 1;
+    g.setLineDash([4, 4]);
+    for (const t of state.breaks) {
+      const sx = ((t - map.sStartSec) / map.sStepSec) * cw;
+      if (sx >= 0 && sx <= cv.width) {
+        g.beginPath(); g.moveTo(sx, 0); g.lineTo(sx, cv.height); g.stroke();
+      }
+      const ey = cv.height - ((t - map.eStartSec) / map.eStepSec) * ch;
+      if (ey >= 0 && ey <= cv.height) {
+        g.beginPath(); g.moveTo(0, ey); g.lineTo(cv.width, ey); g.stroke();
+      }
+    }
+    g.restore();
   }
   g.font = '11px Consolas, monospace';
   g.fillStyle = '#8a857b';

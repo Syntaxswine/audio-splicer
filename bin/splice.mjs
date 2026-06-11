@@ -50,7 +50,9 @@ Usage:
       --seam-fade <sec>   blend the trimmed-off lead-in under the loop's tail so
                           the wrap plays the track's own real transition; auto
                           scales 1-4s with seam weakness (0 = hard cut)
-      --no-beats          never snap to beats, texture matching only
+      --no-beats          never snap to beats
+      --no-breaks         don't prefer section breaks; cuts go wherever the
+                          context match is best
 
 Shared options:
   -o, --output <file>     output path; extension picks the format (.ogg .mp3 .wav
@@ -157,6 +159,7 @@ async function main() {
       quality: { type: 'string' },
       'seam-fade': { type: 'string' },
       'no-beats': { type: 'boolean', default: false },
+      'no-breaks': { type: 'boolean', default: false },
     },
   });
 
@@ -173,6 +176,7 @@ async function main() {
       maxTrim: opts['max-trim'],
       windowSec: parseFloat(opts.window),
       useBeats: !opts['no-beats'],
+      useBreaks: !opts['no-breaks'],
       quality: opts.quality,
       onLog: m => console.log(m),
     });
@@ -180,8 +184,9 @@ async function main() {
     console.log(`keep:  ${fmtTime(r.startSec)} -> ${fmtTime(r.endSec)}  (${fmtTime(r.keptSec)}, ${(100 * r.keptSec / r.durSec).toFixed(0)}% of the track)`);
     console.log(`trim:  ${r.startSec.toFixed(2)}s from the start, ${(r.durSec - r.endSec).toFixed(2)}s from the end`);
     console.log(`seam:  ${(r.score * 100).toFixed(0)}% texture match; better cut pair than ${(r.percentile * 100).toFixed(0)}% of the alternatives`);
+    console.log(`cuts:  placed on ${r.cutsOn}`);
     if (r.beatAligned) {
-      console.log(`beats: ${r.bpm.toFixed(1)} BPM — loop is exactly ${r.beatsKept} beats, cuts on the grid`);
+      console.log(`beats: ${r.bpm.toFixed(1)} BPM — loop is exactly ${r.beatsKept} beats`);
     }
     const floorVal = opts.quality != null && opts.quality !== '' ? parseFloat(opts.quality) : undefined;
     const seamFade = opts['seam-fade'] != null

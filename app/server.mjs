@@ -318,6 +318,7 @@ async function handleLoop(req, res) {
         score: r.score, percentile: r.percentile,
         bpm: r.bpm, beatAligned: r.beatAligned, beatsKept: r.beatsKept,
         weakSeam: r.weakSeam, seamFadeSec: fadeUsed,
+        cutsOn: r.cutsOn, breaks: r.breaks,
         map: r.map,
         totalDur: r.keptSec,
       },

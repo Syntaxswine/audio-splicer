@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegPath from 'ffmpeg-static';
 import { probeDuration, buildRandomPlan, buildConcatPlan, makeRng, measureLoudness } from '../lib/engine.mjs';
-import { findLoopCrop, renderLoopCrop, detectBeats, decodeMono, featurize, selectLoopPair, autoSeamFade } from '../lib/loop.mjs';
+import { findLoopCrop, renderLoopCrop, detectBeats, detectBreaks, decodeMono, featurize, selectLoopPair, autoSeamFade } from '../lib/loop.mjs';
 
 const run = promisify(execFile);
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -183,16 +183,28 @@ await splice(['concat',
   path.join(fix, 'loop', 'r.wav'), '-o', loopSrc]);
 
 const lc = await findLoopCrop(loopSrc);
-// longest-above-floor selection may legitimately stretch ~0.2s into the
-// boundary blur (score stays >= the 0.85 bar), hence the loose low bounds
-check('loop: start cut lands at the first motif (~0.8-1.0s)',
+// section breaks take priority: the right answer is the WHOLE-SECTION loop
+// (break at M1 start -> break at M2 start, M+Q = 7.0s), not the max-length
+// texture stretch
+check('loop: cuts placed on section breaks', lc.cutsOn === 'section breaks', lc.cutsOn);
+check('loop: start cut lands on the P->M break (~1.0s)',
   lc.startSec > 0.6 && lc.startSec < 1.4, `got ${lc.startSec.toFixed(2)}s`);
-check('loop: end cut lands inside the second motif (~9.5s)',
-  lc.endSec > 9.0 && lc.endSec < 9.9, `got ${lc.endSec.toFixed(2)}s`);
-check('loop: keeps the longest seamless span (~8.5-8.9s)',
-  lc.keptSec > 7.8 && lc.keptSec < 9.3, `got ${lc.keptSec.toFixed(2)}s`);
+check('loop: end cut lands on the Q->M break (~8.0s)',
+  lc.endSec > 7.6 && lc.endSec < 8.4, `got ${lc.endSec.toFixed(2)}s`);
+check('loop: keeps whole sections (~7.0s)',
+  lc.keptSec > 6.5 && lc.keptSec < 7.5, `got ${lc.keptSec.toFixed(2)}s`);
 check('loop: seam match clears the quality floor on identical motifs',
   lc.score >= 0.85 && !lc.weakSeam, `got ${lc.score.toFixed(3)} weak=${lc.weakSeam}`);
+
+// the break detector itself: P|M|Q|M|R has breaks at 1, 4, 8 (and 11)
+const lcF = featurize(await decodeMono(loopSrc));
+const lcBreaks = detectBreaks(lcF).map(b => b.t);
+const near = (t, target) => Math.abs(t - target) < 0.5;
+check('breaks: finds the section boundaries of P|M|Q|M|R',
+  lcBreaks.some(t => near(t, 1)) && lcBreaks.some(t => near(t, 4)) && lcBreaks.some(t => near(t, 8)),
+  `got ${lcBreaks.map(t => t.toFixed(1)).join(', ')}`);
+check('breaks: --no-breaks falls back to texture search',
+  (await findLoopCrop(loopSrc, { useBreaks: false })).cutsOn === 'texture');
 // note: ~20% of candidate pairs here tie the winner by design (any M1 offset
 // pairs perfectly with the same M2 offset), so the bar is 0.6, not 0.9
 check('loop: chosen cut pair beats most alternative cut pairs',
@@ -316,6 +328,8 @@ check('beats: confident pulse on rhythmic material',
 const blc = await findLoopCrop(clickSrc);
 check('beats: loop crop reports beat alignment', blc.beatAligned === true,
   JSON.stringify({ aligned: blc.beatAligned, conf: blc.beatConfidence }));
+check('beats: uniform track has no fake section breaks -> beat grid used',
+  blc.cutsOn === 'beat grid', blc.cutsOn);
 // judge against the fixture's TRUE period (0.5s) — the measured tempo carries
 // ~0.5% error, but the sample-level xcorr refine locks cuts to the track's
 // real periodicity, so the kept length must be whole TRUE beats

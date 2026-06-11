@@ -103,9 +103,12 @@ try {
   const loopRes = await post('/api/loop', { file: loopSrc, outputFolder: out, format: '.ogg' });
   const loopDone = (await loopRes.text()).trim().split('\n').map(l => JSON.parse(l)).find(l => l.done)?.done;
   check('loop endpoint returns cuts + quality', !!loopDone &&
-    loopDone.kind === 'loop' && loopDone.keptSec > 7 &&
+    loopDone.kind === 'loop' && loopDone.keptSec > 6.5 &&
     loopDone.score >= 0.85 && loopDone.weakSeam === false,
     JSON.stringify(loopDone));
+  check('loop endpoint reports break-placed cuts',
+    loopDone?.cutsOn === 'section breaks' && Array.isArray(loopDone?.breaks) && loopDone.breaks.length >= 3,
+    `cutsOn=${loopDone?.cutsOn} breaks=${loopDone?.breaks?.length}`);
   check('loop output named <track>-loop', loopDone?.outName === 'loopsrc-loop.ogg', loopDone?.outName);
   const loopDur = loopDone ? await probeDuration(loopDone.outPath) : 0;
   check('loop render matches the analysis length', Math.abs(loopDur - loopDone.keptSec) < 0.1,
