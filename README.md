@@ -98,6 +98,14 @@ the track's own real transition and is sample-continuous by construction. That's
 the right tool for tracks that evolve continuously and simply don't contain two
 strongly-alike distant moments.
 
+**The similarity map** (app): the loop result includes a heatmap of the entire
+search space — every candidate start cut (x) paired with every candidate end cut
+(y), greener = those two slice points sound more alike, white = pairs shorter than
+the minimum loop. The analyzer's pick is marked with a ring; hover any cell for its
+exact cuts, length, and match score, and **click a bright spot to slice there
+instead** — the manual pick still gets sample-level refinement and the seam-fade
+fallback before rendering.
+
 **Beat detection** runs automatically: an onset-strength envelope (spectral flux)
 is autocorrelated to find the tempo (with a prior near 120 BPM to settle octave
 ambiguity) and a comb fit finds the beat phase. When the pulse is confident, the

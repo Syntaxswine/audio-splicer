@@ -234,6 +234,26 @@ tailRms = Math.sqrt(tailRms / 2205);
 check('seam fade: tail keeps full level (no fade-to-silence at the seam)',
   tailRms > 0.05, `tail RMS ${tailRms.toFixed(3)}`);
 
+// --- 9a3. similarity map: the graph of every start cut × every end cut ---
+const mapRun = await findLoopCrop(loopSrc, { withMap: true });
+const lMap = mapRun.map;
+const mapBytes = Buffer.from(lMap.scores, 'base64');
+check('map: dimensions and data length agree',
+  mapBytes.length === lMap.nS * lMap.nE && lMap.nS > 5 && lMap.nE > 5,
+  `${lMap.nS}x${lMap.nE} vs ${mapBytes.length}`);
+// brightest cell must sit in the motif×motif region — the map points at the slice
+let bestK = 0;
+for (let k = 1; k < mapBytes.length; k++) if (mapBytes[k] > mapBytes[bestK]) bestK = k;
+const bI = Math.floor(bestK / lMap.nE), bJ = bestK % lMap.nE;
+const bS = lMap.sStartSec + bI * lMap.sStepSec;
+const bE = lMap.eStartSec + bJ * lMap.eStepSec;
+check('map: brightest cell is the motif pair',
+  mapBytes[bestK] / 255 > 0.85 && bS < 2.7 && bE > 7.4,
+  `s=${bS.toFixed(2)} e=${bE.toFixed(2)} v=${(mapBytes[bestK] / 255).toFixed(2)}`);
+// pairs shorter than the minimum loop are marked not-a-candidate (0)
+check('map: too-short corner marked invalid',
+  mapBytes[(lMap.nS - 1) * lMap.nE + 0] === 0);
+
 // --- 9b. pair selection: longest-above-floor, not best-score-with-slack ---
 // (best-with-slack degenerates on real music: self-similarity decays with
 // distance, so nearby pairs always win and cuts slam into the trim limits)

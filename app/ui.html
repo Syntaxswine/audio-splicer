@@ -179,6 +179,19 @@
     </div>
     <div style="margin-top:10px" class="totals" id="timelineLabel">timeline</div>
     <div id="timeline"></div>
+    <div id="mapWrap" style="display:none">
+      <div style="margin-top:12px" class="totals">
+        similarity map — every possible start cut (→) paired with every possible end cut (↑);
+        greener = those two slice points sound more alike. click a bright spot to slice there instead.
+      </div>
+      <canvas id="map" width="640" height="420"
+        style="width:100%;margin-top:4px;border:1px solid var(--line);border-radius:3px;background:#fff;cursor:crosshair"></canvas>
+      <div id="mapInfo" class="totals">&nbsp;</div>
+      <div class="row" id="mapActions" style="display:none">
+        <button id="renderSlice">slice here instead</button>
+        <span class="hint" id="mapSelText"></span>
+      </div>
+    </div>
   </fieldset>
 </main>
 
@@ -252,6 +265,33 @@ $('loopBrowse').onclick = async () => {
   if (r.path) { $('loopFile').value = r.path; persist(); }
 };
 
+// --- NDJSON job stream: logs go to #log, returns the done payload ---
+async function streamJob(endpoint, body) {
+  const res = await fetch(endpoint, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let done = null;
+  for (;;) {
+    const { value, done: eof } = await reader.read();
+    if (eof) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.log) $('log').textContent += msg.log + '\n';
+      if (msg.error) throw new Error(msg.error);
+      if (msg.done) done = msg.done;
+    }
+  }
+  if (!done) throw new Error('No result came back — try again.');
+  return done;
+}
+
 // --- run ---
 $('run').onclick = run;
 $('again').onclick = run;
@@ -284,28 +324,7 @@ async function run() {
           seed: $('seed').value,
           history: $('history').checked,
         };
-    const res = await fetch(endpoint, { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body) });
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    let done = null;
-    for (;;) {
-      const { value, done: eof } = await reader.read();
-      if (eof) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        if (msg.log) $('log').textContent += msg.log + '\n';
-        if (msg.error) throw new Error(msg.error);
-        if (msg.done) done = msg.done;
-      }
-    }
-    if (!done) throw new Error('No result came back — try again.');
+    const done = await streamJob(endpoint, body);
     showResult(done);
   } catch (err) {
     $('log').classList.add('err');
@@ -323,11 +342,12 @@ function showResult(d) {
   $('player').loop = d.kind === 'loop';
   if (d.kind === 'loop') {
     const meta = [
-      'kept ' + fmt(d.startSec) + ' → ' + fmt(d.endSec) + ' of ' + fmt(d.durSec) +
+      (d.manual ? 'manual slice from the map — ' : '') +
+        'kept ' + fmt(d.startSec) + ' → ' + fmt(d.endSec) + ' of ' + fmt(d.durSec) +
         '  (' + Math.round(100 * d.keptSec / d.durSec) + '% of the track)',
       'trimmed ' + d.startSec.toFixed(1) + 's from the start, ' + (d.durSec - d.endSec).toFixed(1) + 's from the end',
-      'seam: ' + Math.round(d.score * 100) + '% texture match — better cut pair than ' +
-        Math.round(d.percentile * 100) + '% of the alternatives',
+      'seam: ' + Math.round(d.score * 100) + '% texture match' +
+        (d.percentile != null ? ' — better cut pair than ' + Math.round(d.percentile * 100) + '% of the alternatives' : ''),
     ];
     if (d.beatAligned) {
       meta.push('beats: ' + d.bpm.toFixed(1) + ' BPM — loop is exactly ' + d.beatsKept + ' beats, cuts on the grid');
@@ -342,11 +362,17 @@ function showResult(d) {
     $('timeline').textContent = '';
     $('timelineLabel').style.display = 'none';
     $('player').src = '/api/audio?p=' + encodeURIComponent(d.outPath);
-    $('result').style.display = '';
+    $('mapActions').style.display = 'none';
+    if (d.map) drawMap(d.map, d.startSec, d.endSec);                 // fresh analysis
+    else if (state.map) drawMap(state.map, d.startSec, d.endSec);    // manual slice: keep map, move marker
+    // 'block', not '': the stylesheet hides #result, and '' would fall back to it
+    $('result').style.display = 'block';
     $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     return;
   }
   $('timelineLabel').style.display = '';
+  $('mapWrap').style.display = 'none';
+  state.map = null;
   const meta = [];
   if (d.seed) meta.push('seed ' + d.seed + ' — paste it into the seed box to recreate this mix');
   if (d.novelty != null) meta.push('novelty: ' + Math.round(d.novelty * 100) + '% different from your previous mixes');
@@ -370,11 +396,124 @@ function showResult(d) {
   if (tail > 0.05) rows.push('  ' + fmt(prevEnd).padStart(7) + '  ' + tail.toFixed(1).padStart(5) + 's  ~ silence ~');
   $('timeline').textContent = rows.join('\n');
   $('player').src = '/api/audio?p=' + encodeURIComponent(d.outPath);
-  $('result').style.display = '';
+  $('result').style.display = 'block';
   $('result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 $('openFolder').onclick = () => { if (state.lastOut) api('/api/open', { file: state.lastOut }); };
+
+// --- similarity map: every start cut × every end cut, greener = more alike ---
+function mapColor(v) {
+  // v 1..255 (0 = not a candidate). Stretch the useful 0.35..1.0 score range
+  // over paper -> tan -> green so the strong region stands out.
+  const t = Math.max(0, Math.min(1, (v / 255 - 0.35) / 0.6));
+  const lerp = (a, b, u) => a.map((c, i) => Math.round(c + (b[i] - c) * u));
+  const paper = [241, 237, 228], tan = [201, 191, 168], green = [76, 110, 88];
+  const rgb = t < 0.5 ? lerp(paper, tan, t * 2) : lerp(tan, green, (t - 0.5) * 2);
+  return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+}
+
+function decodeB64(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+
+function mapCellAt(px, py) {
+  const m = state.map;
+  const cv = $('map');
+  const i = Math.floor((px / cv.width) * m.nS);
+  const j = Math.floor(((cv.height - py) / cv.height) * m.nE); // y up = later end cut
+  if (i < 0 || i >= m.nS || j < 0 || j >= m.nE) return null;
+  return {
+    i, j,
+    sSec: m.sStartSec + i * m.sStepSec,
+    eSec: m.eStartSec + j * m.eStepSec,
+    v: state.mapScores[i * m.nE + j],
+  };
+}
+
+function drawMap(map, pickS, pickE) {
+  state.map = map;
+  state.mapScores = decodeB64(map.scores);
+  const cv = $('map'), g = cv.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, cv.width, cv.height);
+  const cw = cv.width / map.nS, ch = cv.height / map.nE;
+  for (let i = 0; i < map.nS; i++) {
+    for (let j = 0; j < map.nE; j++) {
+      const v = state.mapScores[i * map.nE + j];
+      if (v === 0) continue; // shorter than the minimum loop — not a candidate
+      g.fillStyle = mapColor(v);
+      g.fillRect(i * cw, cv.height - (j + 1) * ch, Math.ceil(cw), Math.ceil(ch));
+    }
+  }
+  g.font = '11px Consolas, monospace';
+  g.fillStyle = '#8a857b';
+  g.fillText('start cut → ' + fmt(map.sStartSec) + ' .. ' + fmt(map.sStartSec + map.nS * map.sStepSec), 6, cv.height - 6);
+  g.save();
+  g.translate(12, cv.height - 90);
+  g.rotate(-Math.PI / 2);
+  g.fillText('end cut → ' + fmt(map.eStartSec) + ' .. ' + fmt(map.eStartSec + map.nE * map.eStepSec), 0, 0);
+  g.restore();
+  if (pickS != null) {
+    const x = ((pickS - map.sStartSec) / map.sStepSec + 0.5) * cw;
+    const y = cv.height - ((pickE - map.eStartSec) / map.eStepSec + 0.5) * ch;
+    g.lineWidth = 3; g.strokeStyle = '#fff';
+    g.beginPath(); g.arc(x, y, 7, 0, 2 * Math.PI); g.stroke();
+    g.lineWidth = 1.5; g.strokeStyle = '#2b2a27';
+    g.beginPath(); g.arc(x, y, 7, 0, 2 * Math.PI); g.stroke();
+  }
+  $('mapWrap').style.display = '';
+}
+
+function canvasPos(ev) {
+  const cv = $('map');
+  const r = cv.getBoundingClientRect();
+  return [(ev.clientX - r.left) * cv.width / r.width, (ev.clientY - r.top) * cv.height / r.height];
+}
+
+$('map').addEventListener('mousemove', ev => {
+  if (!state.map) return;
+  const c = mapCellAt(...canvasPos(ev));
+  $('mapInfo').textContent = !c ? ' ' : c.v === 0
+    ? 'too short here — under the minimum loop length'
+    : 'slice ' + fmt(c.sSec) + ' → ' + fmt(c.eSec) + ' · length ' + fmt(c.eSec - c.sSec) + ' · match ' + Math.round(c.v / 255 * 100) + '%';
+});
+
+$('map').addEventListener('click', ev => {
+  if (!state.map) return;
+  const c = mapCellAt(...canvasPos(ev));
+  if (!c || c.v === 0) return;
+  state.mapSel = c;
+  drawMap(state.map, c.sSec, c.eSec);
+  $('mapActions').style.display = '';
+  $('mapSelText').textContent = fmt(c.sSec) + ' → ' + fmt(c.eSec) +
+    ' (' + fmt(c.eSec - c.sSec) + ', match ' + Math.round(c.v / 255 * 100) + '%)';
+});
+
+$('renderSlice').onclick = async () => {
+  if (!state.mapSel) return;
+  $('renderSlice').disabled = true;
+  $('log').textContent = '';
+  $('log').classList.remove('err');
+  try {
+    const done = await streamJob('/api/loop', {
+      file: $('loopFile').value,
+      outputFolder: $('outFolder').value,
+      format: $('format').value,
+      startSec: state.mapSel.sSec,
+      endSec: state.mapSel.eSec,
+    });
+    showResult(done);
+  } catch (err) {
+    $('log').classList.add('err');
+    $('log').textContent += '\n' + err.message;
+  } finally {
+    $('renderSlice').disabled = false;
+  }
+};
 
 // --- settings persistence + server heartbeat ---
 const FIELDS = ['inFolder', 'outFolder', 'outName', 'format', 'length', 'maxGap', 'gap', 'crossfade', 'loopFile', 'maxTrim'];

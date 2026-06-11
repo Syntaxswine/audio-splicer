@@ -111,6 +111,25 @@ try {
   check('loop render matches the analysis length', Math.abs(loopDur - loopDone.keptSec) < 0.1,
     `got ${loopDur.toFixed(2)} vs ${loopDone?.keptSec?.toFixed(2)}`);
 
+  // similarity map ships with the result and decodes to the declared size
+  const m = loopDone?.map;
+  const mBytes = m ? Buffer.from(m.scores, 'base64') : null;
+  check('loop result includes the similarity map',
+    !!m && m.nS > 5 && m.nE > 5 && mBytes.length === m.nS * m.nE,
+    m ? `${m.nS}x${m.nE} vs ${mBytes?.length}` : 'no map');
+
+  // manual slice: clicking the map sends explicit cuts; server refines + renders
+  const man = await post('/api/loop', {
+    file: loopSrc, outputFolder: out, format: '.ogg', startSec: 1.0, endSec: 9.5,
+  });
+  const manDone = (await man.text()).trim().split('\n').map(l => JSON.parse(l)).find(l => l.done)?.done;
+  check('manual slice returns refined cuts near the click',
+    manDone?.manual === true && Math.abs(manDone.startSec - 1.0) < 0.15 && Math.abs(manDone.endSec - 9.5) < 0.15,
+    JSON.stringify({ s: manDone?.startSec, e: manDone?.endSec }));
+  const manDur = manDone ? await probeDuration(manDone.outPath) : 0;
+  check('manual slice renders at the picked length',
+    Math.abs(manDur - manDone.keptSec) < 0.1, `got ${manDur.toFixed(2)}`);
+
   // bad input surfaces as a streamed error, not a hang
   const bad = await post('/api/mix', { mode: 'random', inputFolder: fix, outputFolder: out, length: '' });
   const badLines = (await bad.text()).trim().split('\n').map(l => JSON.parse(l));

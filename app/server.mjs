@@ -16,7 +16,10 @@ import {
   AUDIO_EXTENSIONS, probeDuration, makeRng, parseLength, mixArtifactRegex,
   buildConcatPlan, buildRandomPlan, planSequence, pickNovelPlan, renderPlan,
 } from '../lib/engine.mjs';
-import { findLoopCrop, renderLoopCrop } from '../lib/loop.mjs';
+import {
+  findLoopCrop, renderLoopCrop, decodeMono, featurize, scorePairSeconds,
+  refineSeconds, ANALYSIS_RATE,
+} from '../lib/loop.mjs';
 
 const PORT = parseInt(process.env.SPLICE_PORT || '8741', 10);
 const appDir = path.dirname(fileURLToPath(import.meta.url));
@@ -266,7 +269,36 @@ async function handleLoop(req, res) {
     if (!existsSync(outDir)) throw new Error(`Output folder does not exist: ${outDir}`);
     const outPath = uniquePath(outDir, `${path.basename(file, srcExt)}-loop`, ext);
 
-    const r = await findLoopCrop(file, { maxTrim: q.maxTrim || null, quality: q.quality || null, onLog: m => send({ log: m }) });
+    if (q.startSec != null && q.endSec != null) {
+      // manual slice: the user clicked a spot on the similarity map
+      send({ log: `manual slice ${(+q.startSec).toFixed(1)}s -> ${(+q.endSec).toFixed(1)}s — refining...` });
+      const x = await decodeMono(file);
+      const durSec = x.length / ANALYSIS_RATE;
+      const F = featurize(x);
+      const score = scorePairSeconds(F, +q.startSec, +q.endSec);
+      const { startSec, endSec } = refineSeconds(x, +q.startSec, +q.endSec);
+      const weakSeam = score < 0.85;
+      const seamFade = weakSeam && startSec > 1.01 ? 1 : 0;
+      send({ log: 'rendering crop...' });
+      await renderLoopCrop(file, outPath, startSec, endSec, { seamFadeSec: seamFade });
+      send({
+        done: {
+          kind: 'loop', manual: true,
+          outPath, outName: path.basename(outPath),
+          durSec, startSec, endSec, keptSec: endSec - startSec,
+          score, percentile: null,
+          bpm: null, beatAligned: false, beatsKept: null,
+          weakSeam, seamFadeSec: seamFade,
+          totalDur: endSec - startSec,
+        },
+      });
+      return;
+    }
+
+    const r = await findLoopCrop(file, {
+      maxTrim: q.maxTrim || null, quality: q.quality || null, withMap: true,
+      onLog: m => send({ log: m }),
+    });
     // weak seam: auto-blend the trimmed lead-in under the tail so the wrap
     // plays the track's own real transition
     const seamFade = r.weakSeam && r.startSec > 1.01 ? 1 : 0;
@@ -280,6 +312,7 @@ async function handleLoop(req, res) {
         score: r.score, percentile: r.percentile,
         bpm: r.bpm, beatAligned: r.beatAligned, beatsKept: r.beatsKept,
         weakSeam: r.weakSeam, seamFadeSec: seamFade,
+        map: r.map,
         totalDur: r.keptSec,
       },
     });
